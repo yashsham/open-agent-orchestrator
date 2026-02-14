@@ -1,28 +1,41 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "open-agent-orchestrator"
 version = "0.1.0"
-description = "OpenAgentOrchestrator (OAO) - Control plane for AI agents"
-authors = [{ name="Yash Sharma" }]
+description = "Control plane for AI agents"
 readme = "README.md"
-license = {text = "MIT"}
 requires-python = ">=3.9"
 
-dependencies = [
-    "pydantic",
-    "fastapi",
-    "uvicorn",
-    "langchain",
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
 ]
 
-[project.urls]
-Homepage = "https://github.com/yashsham/open-agent-orchestrator"
-Documentation = "https://github.com/yashsham/open-agent-orchestrator"
-Source = "https://github.com/yashsham/open-agent-orchestrator"
 
-[project.scripts]
-oao = "oao.cli:run_command"
+dependencies = [
+    "pydantic>=2.0",
+]
 
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.100",
+    "uvicorn>=0.22"
+]
+
+langchain = [
+    "langchain>=0.1"
+]
+
+all = [
+    "fastapi>=0.100",
+    "uvicorn>=0.22",
+    "langchain>=0.1"
+]
