@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-agent-orchestrator"
+version = "0.1.0"
+description = "OpenAgentOrchestrator (OAO) - Control plane for AI agents"
+authors = [{ name="Yash Sharma" }]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+
+dependencies = [
+    "pydantic",
+    "fastapi",
+    "uvicorn",
+    "langchain",
+]
+
+[project.urls]
+Homepage = "https://github.com/yashsham/open-agent-orchestrator"
+Documentation = "https://github.com/yashsham/open-agent-orchestrator"
+Source = "https://github.com/yashsham/open-agent-orchestrator"
+
+[project.scripts]
+oao = "oao.cli:run_command"
+
