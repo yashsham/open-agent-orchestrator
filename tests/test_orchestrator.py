@@ -16,7 +16,6 @@ def test_orchestrator_success():
     report = orch.run(
         agent=DummyAgent(),
         task="Test task",
-        framework="langchain",  # framework required but adapter won't be used here
     )
 
     assert report.status == "SUCCESS"

@@ -1,6 +1,14 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+try:
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+    from pydantic import BaseModel
+except ImportError:
+    raise ImportError(
+        "FastAPI is not installed.\n"
+        "Install with:\n"
+        "    pip install open-agent-orchestrator[server]"
+    )
+
 from typing import Dict
 
 from oao.runtime.orchestrator import Orchestrator

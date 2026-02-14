@@ -170,8 +170,13 @@ class Orchestrator:
     def _handle_init(self, agent: Any, task: str, framework: str):
         print("[INIT] Initializing agent...")
 
-        AdapterClass = AdapterRegistry.get_adapter(framework)
-        adapter = AdapterClass(agent)
+        try:
+            AdapterClass = AdapterRegistry.get_adapter(framework)
+            adapter = AdapterClass(agent)
+        except Exception as e:
+            # If adapter fails to load (e.g., missing dependency),
+            # raise the error to fail the execution gracefully
+            raise ImportError(f"Failed to load adapter for framework '{framework}': {e}")
 
         self.context = {
             "agent": agent,
