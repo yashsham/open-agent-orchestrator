@@ -2,7 +2,11 @@
 
 > The Control Plane for AI Agents.
 
-OpenAgentOrchestrator (OAO) is an infrastructure-grade orchestration engine designed to bring governance, determinism, and observability to AI agents.
+OpenAgentOrchestrator (OAO) is an infrastructure-grade orchestration engine designed to bring **governance**, **determinism**, and **observability** to AI agents.
+
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
+![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)
 
 While most agent frameworks focus on building agents, OAO focuses on **controlling them**.
 
@@ -176,10 +180,19 @@ Install from PyPI:
 pip install open-agent-orchestrator
 ```
 
+### Optional Dependencies
+
+For running the API server or using LangChain adapters:
+
+```bash
+# Install with API server and LangChain support
+pip install "open-agent-orchestrator[server,langchain]"
+```
+
 Or install locally:
 
 ```bash
-pip install -e .
+pip install -e ".[all]"
 ```
 
 ---
@@ -269,6 +282,9 @@ asyncio.run(main())
 Start server:
 
 ```bash
+# Ensure server dependencies are installed
+pip install "open-agent-orchestrator[server]"
+
 uvicorn oao.server:app --reload
 ```
 
