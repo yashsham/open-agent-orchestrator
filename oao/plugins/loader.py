@@ -1,18 +1,21 @@
 import importlib
 import sys
 import os
-from typing import List
+import inspect
+from typing import List, Type
+from oao.plugins.base import PluginInterface
 
 class PluginLoader:
     """
-    Loads external plugins to extend OAO functionality.
+    Securely loads external plugins to extend OAO functionality.
+    Enforces PluginInterface compliance.
     """
 
     @staticmethod
     def load(plugin_path: str):
         """
         Load a plugin from a path (module string or file path).
-        The plugin module must have a `register()` function.
+        The plugin module must define a class that implements PluginInterface.
         """
         try:
             # If path ends with .py, add its dir to sys.path and import name
@@ -27,12 +30,25 @@ class PluginLoader:
                 # Assume python module path
                 module = importlib.import_module(plugin_path)
 
-            if hasattr(module, "register"):
-                module.register()
-                print(f"[PLUGIN] Loaded: {plugin_path}")
-            else:
-                print(f"[PLUGIN] Warning: {plugin_path} has no register() function")
-                
+            # Find the PluginInterface implementation
+            plugin_class = None
+            for name, obj in inspect.getmembers(module):
+                if (inspect.isclass(obj) and 
+                    issubclass(obj, PluginInterface) and 
+                    obj is not PluginInterface):
+                    plugin_class = obj
+                    break
+            
+            if not plugin_class:
+                print(f"[PLUGIN] Error: No PluginInterface implementation found in {plugin_path}")
+                return
+
+            # Instantiate and activate
+            plugin_instance = plugin_class()
+            plugin_instance.activate()
+            print(f"[PLUGIN] Loaded: {plugin_instance.name} v{plugin_instance.version}")
+            return plugin_instance
+
         except Exception as e:
             print(f"[PLUGIN] Error loading {plugin_path}: {e}")
             raise

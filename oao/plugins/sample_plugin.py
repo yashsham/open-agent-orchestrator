@@ -1,7 +1,7 @@
+from oao.plugins.base import PluginInterface
 from oao.policy.registry import PolicyRegistry
 from oao.runtime.events import GlobalEventRegistry, EventType
 from oao.runtime.scheduler import SchedulerRegistry
-from oao.adapters.registry import AdapterRegistry
 
 # Custom Policy
 class StrictJsonPolicy:
@@ -22,17 +22,28 @@ class FifoScheduler:
 
 # Custom Event Listener
 def on_execution_complete(event):
-    print(f"[PLUGIN] Execution completed: {event.payload.get('report', {}).get('status')}")
+    print(f"[PLUGIN] Execution completed: {event.payload.get('status')}")
 
-# Register function
-def register():
-    print("[PLUGIN] Registering sample plugin components...")
-    
-    # Register Policy
-    PolicyRegistry.register("strict_json", StrictJsonPolicy)
-    
-    # Register Scheduler
-    SchedulerRegistry.register("fifo", FifoScheduler)
-    
-    # Register Event Listener
-    GlobalEventRegistry.register(EventType.EXECUTION_COMPLETE, on_execution_complete)
+class SamplePlugin(PluginInterface):
+    @property
+    def name(self) -> str:
+        return "sample_plugin"
+
+    @property
+    def version(self) -> str:
+        return "1.0.0"
+
+    def activate(self):
+        print(f"[PLUGIN] Activating {self.name}...")
+        
+        # Register Policy
+        PolicyRegistry.register("strict_json", StrictJsonPolicy)
+        
+        # Register Scheduler
+        SchedulerRegistry.register("fifo", FifoScheduler)
+        
+        # Register Event Listener
+        GlobalEventRegistry.register(EventType.EXECUTION_COMPLETE, on_execution_complete)
+
+    def deactivate(self):
+        print(f"[PLUGIN] Deactivating {self.name}...")

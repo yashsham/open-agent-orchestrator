@@ -1,44 +1,55 @@
-# OpenAgentOrchestrator v0.2.0
+# OpenAgentOrchestrator v1.0.0
 
-**Enterprise-Grade Release** - Introducing Graph execution, Observability, and Extensibility.
+**Production Ready Release** - The "Enterprise Hardened" control plane for AI agents.
 
-## New Features
-- **🕸️ DAG Orchestration**: Execute complex workflows with `TaskGraph` and `GraphExecutor`. Supports automatic dependency resolution and parallel execution.
-- **📊 Observability (Prometheus)**: Built-in `/metrics` endpoint exposing real-time performance data (executions, tokens, duration, queue size).
-- **🔌 Enterprise Plugin System**: New `oao.plugins` module allowing custom Policies, Schedulers, and Event Listeners via `PluginLoader`.
-- **⚡ Distributed Scheduler**: Redis-backed scheduler for horizontal scaling of agent workloads.
+This release marks a major milestone, introducing a complete suite of features for running mission-critical agent workloads.
 
-## Improvements
-- **Refactored Core**: `Orchestrator` and `MultiAgentOrchestrator` now support registry-based component loading.
-- **Enhanced Logging**: Global event listeners for better traceability.
+## 🌟 Key Features
+
+### 🛡️ Fault Tolerance & Reliability
+- **Crash Recovery**: The Distributed Scheduler now automatically detects dead workers and re-queues their jobs.
+- **Worker Heartbeats**: Active health monitoring for all worker nodes.
+- **Atomic Job Claiming**: Zero data loss during job assignment using `RPOPLPUSH`.
+- **Durable DAGs**: Workflow state is persisted to Redis, allowing resumption after failures.
+
+### 🕸️ DAG Orchestration
+- **Complex Workflows**: Define dependencies between agents using `TaskGraph`.
+- **Parallel Execution**: Independent tasks run concurrently.
+- **State Recovery**: Skip already completed tasks when resuming a workflow.
+
+### 📊 Observability
+- **Prometheus Integration**: Native `/metrics` endpoint.
+- **Key Metrics**:
+  - `oao_executions_total`
+  - `oao_active_agents`
+  - `oao_job_requeued_total` (New!)
+  - `oao_token_usage_total`
+- **Deep Metrics (OpenTelemetry)**:
+  - Distributed tracing for full workflow visualization.
+  - Trace context propagation across async tasks and DAG nodes.
+  - Spans for `Orchestrator.run`, `Agent.step`, and `Tool.execute`.
+
+### 🔌 Enterprise Plugin System
+- **Extensible Architecture**: Load custom Policies, Schedulers, and Event Listeners dynamically.
+- **Secure Plugins**: New `PluginInterface` enforces structure and version compatibility.
+- **Plugin Loader**: Simply point to a Python module to extend OAO.
+
+### ⚡ Distributed Scheduler
+- **Redis-Backed**: Horizontally scale workers across multiple nodes.
+- **Robust Queueing**: Handles network blips and transient failures with retry logic.
+
+## Upgrading
+Upgrade from PyPI:
+```bash
+pip install --upgrade open-agent-orchestrator
+```
+
+## Contributors
+Thanks to the core team for getting us to v1.0.0!
 
 ---
 
 # OpenAgentOrchestrator v0.1.1
-
-**Packaging fix release** - Resolved critical packaging issues from v0.1.0.
-
-## Fixes
-- **Removed `uv.lock`**: Lock files should not be included in PyPI distributions
-- **Removed unused `api_models.py`**: Cleaned up unused module for better code quality
-- **Added FastAPI import guards**: Protected optional server dependencies with proper error messages
-- **Fixed orchestrator adapter error handling**: Improved error messages when adapters fail to load
-
-## Features (from v0.1.0)
-- **Deterministic lifecycle engine**: Strict execution flow (INIT → PLAN → EXECUTE → REVIEW → TERMINATE)
-- **Strict policy enforcement**: Built-in limits for steps, tokens, and tool calls
-- **Adapter registry**: Pluggable architecture supports LangChain (and future frameworks)
-- **Async execution engine**: High-throughput `run_async` support
-- **Multi-agent orchestration**: Run multiple agents concurrently under centralized governance
-- **Parallel scheduler**: Controlled concurrency with error isolation
-- **FastAPI server wrapper**: Production-ready API endpoints (`/run`, `/run-multi`)
-
-## Installation
-```bash
-pip install open-agent-orchestrator
-```
-
-For server and LangChain support:
-```bash
-pip install "open-agent-orchestrator[server,langchain]"
-```
+*Packaging Fix Release*
+- Fixed `uv.lock` packaging issue.
+- Removed unused modules.

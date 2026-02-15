@@ -45,6 +45,11 @@ failures_counter = Counter(
     ["error_type"]
 )
 
+requeued_jobs_counter = Counter(
+    "oao_job_requeued_total",
+    "Total number of jobs requeued after worker failure"
+)
+
 # Histograms
 execution_duration = Histogram(
     "oao_execution_duration_seconds",

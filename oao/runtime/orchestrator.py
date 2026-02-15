@@ -1,6 +1,11 @@
 import time
 import asyncio
 from typing import Any, Optional
+import time
+import uuid
+import asyncio
+from opentelemetry import trace
+from oao.telemetry import get_tracer
 
 from oao.runtime.state_machine import (
     StateMachine,
@@ -35,7 +40,8 @@ class Orchestrator:
         self.event_bus.register(EventType.EXECUTION_COMPLETE, console_logger)
 
         # Register global listeners
-        from oao.runtime.events import GlobalEventRegistry, EventType
+        # Register global listeners
+        from oao.runtime.events import GlobalEventRegistry
         for event_type in EventType:
             for listener in GlobalEventRegistry.get_listeners(event_type):
                 self.event_bus.register(event_type, listener)
@@ -135,72 +141,86 @@ class Orchestrator:
         framework: str = "langchain",
     ) -> ExecutionReport:
 
-        metrics.active_agents.inc()
-        start_time = time.time()
-
-        if self.policy:
-            self.policy.start_timer()
-
-        status = "FAILED"
-        try:
-            while not self.state_machine.is_terminal():
-
-                if self.policy:
-                    self.policy.validate(self.context)
-
-                current_state = self.state_machine.get_state()
-
-                self.event_bus.emit(
-                    Event(EventType.STATE_ENTER, {"state": current_state.name})
-                )
-
-                if current_state == AgentState.INIT:
-                    self._handle_init(agent, task, framework)
-                    self.state_machine.transition(AgentState.PLAN)
-
-                elif current_state == AgentState.PLAN:
-                    self._handle_plan()
-                    self.state_machine.transition(AgentState.EXECUTE)
-
-                elif current_state == AgentState.EXECUTE:
-                    await self._handle_execute_async()
-                    self.state_machine.transition(AgentState.REVIEW)
-
-                elif current_state == AgentState.REVIEW:
-                    self._handle_review()
-                    self.state_machine.transition(AgentState.TERMINATE)
-
-                else:
-                    break
-
-            status = "SUCCESS"
-
-        except Exception as e:
-            print(f"[ASYNC ERROR] {e}")
-            self.state_machine.fail()
-            metrics.failures_counter.labels(error_type=type(e).__name__).inc()
-            status = "FAILED"
-            
-        finally:
-            metrics.active_agents.dec()
-
-        execution_time = time.time() - start_time
+        tracer = get_tracer(__name__)
         
-        # Record execution metrics
-        agent_type = agent.__class__.__name__
-        metrics.execution_counter.labels(status=status, agent_type=agent_type).inc()
-        metrics.execution_duration.labels(agent_type=agent_type).observe(execution_time)
-        metrics.token_usage_counter.labels(agent_type=agent_type).inc(
-            self.context.get("token_usage", 0)
-        )
+        with tracer.start_as_current_span(
+            "orchestrator.run",
+            attributes={
+                "agent.type": getattr(agent, "name", agent.__class__.__name__),
+                "agent.framework": framework,
+                "task.length": len(task)
+            }
+        ) as span:
+            metrics.active_agents.inc()
+            start_time = time.time()
 
-        report = self._generate_report(status, execution_time)
+            if self.policy:
+                self.policy.start_timer()
 
-        self.event_bus.emit(
-            Event(EventType.EXECUTION_COMPLETE, {"report": report.dict()})
-        )
+            status = "FAILED"
+            try:
+                while not self.state_machine.is_terminal():
 
-        return report
+                    if self.policy:
+                        self.policy.validate(self.context)
+
+                    current_state = self.state_machine.get_state()
+
+                    self.event_bus.emit(
+                        Event(EventType.STATE_ENTER, {"state": current_state.name})
+                    )
+
+                    if current_state == AgentState.INIT:
+                        self._handle_init(agent, task, framework)
+                        self.state_machine.transition(AgentState.PLAN)
+
+                    elif current_state == AgentState.PLAN:
+                        self._handle_plan()
+                        self.state_machine.transition(AgentState.EXECUTE)
+
+                    elif current_state == AgentState.EXECUTE:
+                        await self._handle_execute_async()
+                        self.state_machine.transition(AgentState.REVIEW)
+
+                    elif current_state == AgentState.REVIEW:
+                        self._handle_review()
+                        self.state_machine.transition(AgentState.TERMINATE)
+
+                    else:
+                        break
+
+                status = "SUCCESS"
+
+            except Exception as e:
+                print(f"[ASYNC ERROR] {e}")
+                self.state_machine.fail()
+                metrics.failures_counter.labels(error_type=type(e).__name__).inc()
+                status = "FAILED"
+                
+                # Trace exception
+                span.record_exception(e)
+                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                
+            finally:
+                metrics.active_agents.dec()
+
+            execution_time = time.time() - start_time
+            
+            # Record execution metrics
+            agent_type = agent.__class__.__name__
+            metrics.execution_counter.labels(status=status, agent_type=agent_type).inc()
+            metrics.execution_duration.labels(agent_type=agent_type).observe(execution_time)
+            metrics.token_usage_counter.labels(agent_type=agent_type).inc(
+                self.context.get("token_usage", 0)
+            )
+
+            report = self._generate_report(status, execution_time)
+
+            self.event_bus.emit(
+                Event(EventType.EXECUTION_COMPLETE, {"report": report.dict()})
+            )
+
+            return report
 
     # =====================================================
     # Lifecycle Handlers

@@ -7,10 +7,26 @@ OpenAgentOrchestrator (OAO) is an infrastructure-grade orchestration engine desi
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)
+![Enterprise Hardened](https://img.shields.io/badge/Enterprise-Hardened-blueviolet.svg)
 
 While most agent frameworks focus on building agents, OAO focuses on **controlling them**.
 
 OAO acts as a **control plane** on top of existing AI frameworks, enabling safe, measurable, and scalable execution of AI agents.
+
+---
+
+# 🛡️ Fault Tolerance & Persistence
+
+## 💓 Robust Distributed Scheduler
+- **Crash Recovery**: Automatically detects dead workers and re-queues their jobs.
+- **Heartbeats**: Workers report liveness to prevent silent failures.
+- **Safe Claiming**: Uses `RPOPLPUSH` to ensure zero job loss during assignment.
+- **Retries**: Configurable exponential backoff for transient failures.
+
+## 💾 Durable DAG Execution
+- **State Persistence**: Persists every task's result to Redis.
+- **Resume-on-Failure**: Crashed workflows can be resumed; completed tasks are skipped.
+- **Auditable History**: Full execution trace stored in persistent storage.
 
 ---
 
@@ -328,34 +344,51 @@ Available endpoints:
 
 ---
 
-# 📊 Observability (Prometheus)
+# 📊 Observability (Metrics & Tracing)
 
-OAO exposes APM metrics at `/metrics`:
+OAO provides deep visibility into your agent fleets.
 
+### Prometheus Metrics
+Exposed at `/metrics`:
 - `oao_executions_total`: Execution counter (status, agent_type)
 - `oao_execution_duration_seconds`: Histogram of execution time
 - `oao_active_agents`: Gauge of concurrent agents
 - `oao_token_usage_total`: Token consumption counter
 - `oao_queue_size`: Distributed queue depth
 
-Integrate with Prometheus + Grafana for real-time monitoring.
+### OpenTelemetry Tracing
+Full distributed tracing for workflows:
+- **Root Spans**: `orchestrator.run`, `dag.execute`
+- **Child Spans**: `agent.step`, `tool.execute`, `dag.schedule_task`
+- **Context Propagation**: Trace IDs flow across async tasks and Redis queues.
 
 ---
 
 # 🔌 Enterprise Plugin System
 
-Extend OAO without modifying core code.
+Extend OAO without modifying core code. Built on a **Secure Plugin Interface**.
 
 ### 1. Create a Plugin (`my_plugin.py`)
 
-```python
-from oao.policy.registry import PolicyRegistry
-from oao.runtime.scheduler import SchedulerRegistry
+Plugins must implement `PluginInterface`:
 
-def register():
-    # Register custom components
-    PolicyRegistry.register("custom_policy", MyCustomPolicy)
-    SchedulerRegistry.register("priority_scheduler", PriorityScheduler)
+```python
+from oao.plugins.base import PluginInterface
+from oao.policy.registry import PolicyRegistry
+
+class MyPlugin(PluginInterface):
+    @property
+    def name(self): return "my_security_plugin"
+    
+    @property
+    def version(self): return "1.0.0"
+
+    def activate(self):
+        # Register custom components safely
+        PolicyRegistry.register("custom_policy", MyCustomPolicy)
+        
+    def deactivate(self):
+        pass
 ```
 
 ### 2. Load the Plugin
@@ -363,6 +396,7 @@ def register():
 ```python
 from oao.plugins.loader import PluginLoader
 
+# Verifies signature and version before loading
 PluginLoader.load("path/to/my_plugin.py")
 ```
 

@@ -8,9 +8,12 @@ with task dependencies, allowing parallel execution of independent tasks.
 from typing import Any, Dict, List, Set, Optional
 from collections import defaultdict, deque
 import asyncio
+import uuid
+import json
 
 from oao.runtime.orchestrator import Orchestrator
 from oao.runtime.scheduler import ParallelAgentScheduler
+from oao.telemetry import get_tracer
 
 
 class TaskNode:
@@ -176,16 +179,16 @@ class TaskGraph:
 class GraphExecutor:
     """
     Executes a TaskGraph with dependency-aware parallel execution.
-    
-    Uses topological sorting to determine execution order and runs
-    independent tasks concurrently using ParallelAgentScheduler.
+    Supports durable execution by persisting state to Redis.
     """
     
     def __init__(
         self,
         graph: TaskGraph,
         policy: Optional[Any] = None,
-        max_concurrency: int = 3
+        max_concurrency: int = 3,
+        workflow_id: Optional[str] = None,
+        persistence_url: Optional[str] = None
     ):
         """
         Initialize graph executor.
@@ -194,26 +197,26 @@ class GraphExecutor:
             graph: TaskGraph to execute
             policy: Optional policy for orchestration
             max_concurrency: Maximum concurrent tasks
+            workflow_id: Unique ID for this workflow instance (for resumption)
+            persistence_url: Redis URL for state persistence
         """
         self.graph = graph
         self.policy = policy
         self.scheduler = ParallelAgentScheduler(max_concurrency=max_concurrency)
+        self.workflow_id = workflow_id or str(uuid.uuid4())
+        
+        # Setup persistence
+        self.persistence = None
+        if persistence_url:
+            from oao.runtime.persistence import RedisPersistenceAdapter
+            self.persistence = RedisPersistenceAdapter(persistence_url)
+            print(f"[DAG] Persistence enabled for workflow {self.workflow_id}")
         
         # Validate graph on initialization
         self.graph.validate()
     
     def execute(self, task: str, framework: str = "langchain") -> Dict[str, Any]:
-        """
-        Execute the graph synchronously.
-        
-        Args:
-            task: Task description to pass to all agents
-            framework: Framework type for agent creation
-            
-        Returns:
-            Dictionary mapping task names to execution reports
-        """
-        # This is a sync wrapper around async implementation
+        """Execute the graph synchronously."""
         import asyncio
         return asyncio.run(self.execute_async(task, framework))
     
@@ -223,61 +226,110 @@ class GraphExecutor:
         framework: str = "langchain"
     ) -> Dict[str, Any]:
         """
-        Execute the graph asynchronously.
-        
-        Args:
-            task: Task description to pass to all agents
-            framework: Framework type for agent creation
-            
-        Returns:
-            Dictionary mapping task names to execution reports
+        Execute the graph asynchronously with state recovery.
         """
-        # Get execution order (levels)
-        execution_order = self.graph.get_execution_order()
+        tracer = get_tracer(__name__)
         
-        results = {}
-        
-        # Execute level by level
-        for level in execution_order:
-            # Build tasks for this level
-            level_tasks = {}
+        with tracer.start_as_current_span(
+            "dag.execute",
+            attributes={
+                "workflow.id": self.workflow_id,
+                "task.count": len(self.graph.nodes)
+            }
+        ) as span:
+            # Load existing state if persistence is enabled
+            existing_state = {}
+            if self.persistence:
+                existing_state = self.persistence.load_all_nodes(self.workflow_id)
+                print(f"[DAG] Loaded state for {len(existing_state)} nodes")
+                span.set_attribute("workflow.loaded_nodes", len(existing_state))
+
+            # Get execution order (levels)
+            execution_order = self.graph.get_execution_order()
             
-            for task_name in level:
-                node = self.graph.get_node(task_name)
-                
-                # Gather dependency results
-                dep_results = {
-                    dep: self.graph.get_node(dep).result
-                    for dep in node.dependencies
-                }
-                
-                # Create orchestrator for this task
-                async def execute_task(node=node, dep_results=dep_results):
-                    orch = Orchestrator(policy=self.policy)
-                    
-                    # Augment task with dependency context
-                    augmented_task = task
-                    if dep_results:
-                        context_str = "\n\nContext from previous tasks:\n"
-                        for dep_name, dep_result in dep_results.items():
-                            if hasattr(dep_result, 'final_output'):
-                                context_str += f"- {dep_name}: {dep_result.final_output}\n"
-                        augmented_task = task + context_str
-                    
-                    report = await orch.run_async(
-                        agent=node.agent,
-                        task=augmented_task,
-                        framework=framework
-                    )
-                    
-                    # Store result in node
-                    node.result = report
-                    return report
-                
-                level_tasks[task_name] = execute_task()
+            results = {}
             
-            # Execute all tasks in this level concurrently
-            level_results = await self.scheduler.run(level_tasks)
-            results.update(level_results)
-        
-        return results
+            # Execute level by level
+            for level in execution_order:
+                # Build tasks for this level
+                level_tasks = {}
+                
+                for task_name in level:
+                    # Create a span for each task scheduling
+                    with tracer.start_as_current_span(f"dag.schedule_task.{task_name}"):
+                        node = self.graph.get_node(task_name)
+                        
+                        # Check if already completed
+                        if task_name in existing_state:
+                            node_data = existing_state[task_name]
+                            if node_data.get("status") == "COMPLETED":
+                                print(f"[DAG] Skipping completed node '{task_name}'")
+                                node.result = node_data.get("result")
+                                results[task_name] = node.result
+                                continue
+                        
+                        # Gather dependency results
+                        dep_results = {}
+                        for dep in node.dependencies:
+                            if self.graph.get_node(dep).result:
+                                dep_results[dep] = self.graph.get_node(dep).result
+                            elif dep in existing_state:
+                                dep_results[dep] = existing_state[dep].get("result")
+
+                        # Create orchestrator for this task
+                        async def execute_task(node=node, dep_results=dep_results, t_name=task_name):
+                            orch = Orchestrator(policy=self.policy)
+                            
+                            augmented_task = task
+                            if dep_results:
+                                context_str = "\n\nContext from previous tasks:\n"
+                                for dep_name, dep_result in dep_results.items():
+                                    content = dep_result
+                                    if isinstance(dep_result, dict):
+                                        content = dep_result.get("final_output", str(dep_result))
+                                    elif hasattr(dep_result, 'final_output'):
+                                        content = dep_result.final_output
+                                        
+                                    context_str += f"- {dep_name}: {content}\n"
+                                augmented_task = task + context_str
+                            
+                            try:
+                                # This execution will pick up the parent span from context
+                                report = await orch.run_async(
+                                    agent=node.agent,
+                                    task=augmented_task,
+                                    framework=framework
+                                )
+                                
+                                node.result = report
+                                
+                                if self.persistence:
+                                    self.persistence.save_node_state(
+                                        self.workflow_id, 
+                                        t_name, 
+                                        {
+                                            "status": "COMPLETED",
+                                            "result": report.dict() if hasattr(report, "dict") else report
+                                        }
+                                    )
+                                
+                                return report
+                                
+                            except Exception as e:
+                                print(f"[DAG] Node '{t_name}' failed: {e}")
+                                if self.persistence:
+                                    self.persistence.save_node_state(
+                                        self.workflow_id, 
+                                        t_name, 
+                                        {"status": "FAILED", "error": str(e)}
+                                    )
+                                raise e
+                        
+                        level_tasks[task_name] = execute_task()
+                
+                # Execute all tasks in this level concurrently
+                if level_tasks:
+                    level_results = await self.scheduler.run(level_tasks)
+                    results.update(level_results)
+            
+            return results
