@@ -14,6 +14,7 @@ from oao.runtime.event_bus import EventBus
 from oao.runtime.events import Event, EventType
 from oao.runtime.default_logger import console_logger
 import oao.adapters.langchain_adapter # Ensure registration
+import oao.metrics as metrics
 
 
 class Orchestrator:
@@ -33,17 +34,28 @@ class Orchestrator:
         self.event_bus.register(EventType.POLICY_VIOLATION, console_logger)
         self.event_bus.register(EventType.EXECUTION_COMPLETE, console_logger)
 
+        # Register global listeners
+        from oao.runtime.events import GlobalEventRegistry, EventType
+        for event_type in EventType:
+            for listener in GlobalEventRegistry.get_listeners(event_type):
+                self.event_bus.register(event_type, listener)
+
     # =====================================================
     # SYNC EXECUTION
     # =====================================================
 
     def run(self, agent: Any, task: str, framework: str = "langchain") -> ExecutionReport:
 
+        metrics.active_agents.inc()
         start_time = time.time()
-
+        
+        # Start histogram timer
+        # We manually time it to include setup time
+        
         if self.policy:
             self.policy.start_timer()
 
+        status = "FAILED"
         try:
             while not self.state_machine.is_terminal():
 
@@ -82,14 +94,27 @@ class Orchestrator:
                 Event(EventType.POLICY_VIOLATION, {"error": str(e)})
             )
             self.state_machine.fail()
+            metrics.failures_counter.labels(error_type="PolicyViolation").inc()
             status = "FAILED"
 
         except (InvalidStateTransition, Exception) as e:
             print(f"[ERROR] {e}")
             self.state_machine.fail()
+            metrics.failures_counter.labels(error_type=type(e).__name__).inc()
             status = "FAILED"
+        
+        finally:
+            metrics.active_agents.dec()
 
         execution_time = time.time() - start_time
+        
+        # Record execution metrics
+        agent_type = agent.__class__.__name__
+        metrics.execution_counter.labels(status=status, agent_type=agent_type).inc()
+        metrics.execution_duration.labels(agent_type=agent_type).observe(execution_time)
+        metrics.token_usage_counter.labels(agent_type=agent_type).inc(
+            self.context.get("token_usage", 0)
+        )
 
         report = self._generate_report(status, execution_time)
 
@@ -110,11 +135,13 @@ class Orchestrator:
         framework: str = "langchain",
     ) -> ExecutionReport:
 
+        metrics.active_agents.inc()
         start_time = time.time()
 
         if self.policy:
             self.policy.start_timer()
 
+        status = "FAILED"
         try:
             while not self.state_machine.is_terminal():
 
@@ -151,9 +178,21 @@ class Orchestrator:
         except Exception as e:
             print(f"[ASYNC ERROR] {e}")
             self.state_machine.fail()
+            metrics.failures_counter.labels(error_type=type(e).__name__).inc()
             status = "FAILED"
+            
+        finally:
+            metrics.active_agents.dec()
 
         execution_time = time.time() - start_time
+        
+        # Record execution metrics
+        agent_type = agent.__class__.__name__
+        metrics.execution_counter.labels(status=status, agent_type=agent_type).inc()
+        metrics.execution_duration.labels(agent_type=agent_type).observe(execution_time)
+        metrics.token_usage_counter.labels(agent_type=agent_type).inc(
+            self.context.get("token_usage", 0)
+        )
 
         report = self._generate_report(status, execution_time)
 

@@ -2,6 +2,21 @@ import asyncio
 from typing import Dict, Any, Callable
 
 
+class SchedulerRegistry:
+    """
+    Registry for custom Schedulers.
+    """
+    _registry: Dict[str, Any] = {}
+
+    @classmethod
+    def register(cls, name: str, scheduler_cls: Any):
+        cls._registry[name] = scheduler_cls
+
+    @classmethod
+    def get(cls, name: str) -> Any:
+        return cls._registry.get(name)
+
+
 class ParallelAgentScheduler:
     """
     Controls concurrent execution of multiple agents.

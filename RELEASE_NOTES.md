@@ -1,3 +1,19 @@
+# OpenAgentOrchestrator v0.2.0
+
+**Enterprise-Grade Release** - Introducing Graph execution, Observability, and Extensibility.
+
+## New Features
+- **🕸️ DAG Orchestration**: Execute complex workflows with `TaskGraph` and `GraphExecutor`. Supports automatic dependency resolution and parallel execution.
+- **📊 Observability (Prometheus)**: Built-in `/metrics` endpoint exposing real-time performance data (executions, tokens, duration, queue size).
+- **🔌 Enterprise Plugin System**: New `oao.plugins` module allowing custom Policies, Schedulers, and Event Listeners via `PluginLoader`.
+- **⚡ Distributed Scheduler**: Redis-backed scheduler for horizontal scaling of agent workloads.
+
+## Improvements
+- **Refactored Core**: `Orchestrator` and `MultiAgentOrchestrator` now support registry-based component loading.
+- **Enhanced Logging**: Global event listeners for better traceability.
+
+---
+
 # OpenAgentOrchestrator v0.1.1
 
 **Packaging fix release** - Resolved critical packaging issues from v0.1.0.

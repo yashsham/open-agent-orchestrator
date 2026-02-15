@@ -7,3 +7,5 @@ __all__ = [
     "MultiAgentOrchestrator",
     "StrictPolicy",
 ]
+
+__version__ = "0.2.0"

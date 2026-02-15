@@ -15,9 +15,14 @@ class MultiAgentOrchestrator:
         self,
         policy: StrictPolicy = None,
         max_concurrency: int = 3,
+        scheduler_name: str = "default",
     ):
         self.policy = policy or StrictPolicy()
-        self.scheduler = ParallelAgentScheduler(max_concurrency)
+        
+        # Use registry or fallback to default
+        from oao.runtime.scheduler import SchedulerRegistry, ParallelAgentScheduler
+        SchedulerClass = SchedulerRegistry.get(scheduler_name) or ParallelAgentScheduler
+        self.scheduler = SchedulerClass(max_concurrency)
 
     async def run_multi_async(
         self,

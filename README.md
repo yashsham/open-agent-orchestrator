@@ -277,6 +277,33 @@ asyncio.run(main())
 
 ---
 
+# 🕸️ DAG Orchestration
+
+Execute complex workflows with dependencies and automatic parallelism.
+
+```python
+from oao.runtime.dag import TaskGraph, GraphExecutor, TaskNode
+
+# Define graph
+graph = TaskGraph()
+graph.add_node(TaskNode("research", agent_researcher, "Research topic X"))
+graph.add_node(TaskNode("draft", agent_writer, "Draft article", dependencies={"research"}))
+graph.add_node(TaskNode("critique", agent_critic, "Critique draft", dependencies={"research"}))
+graph.add_node(TaskNode("polisher", agent_polisher, "Improve draft", dependencies={"critique", "draft"}))
+
+# Execute
+executor = GraphExecutor(graph)
+results = executor.execute("Write a blog post about AI")
+```
+
+Features:
+- **Topological Sorting**: Ensures corect execution order.
+- **Cycle Detection**: Prevents infinite loops.
+- **Parallel Execution**: Independent branches run concurrently.
+- **Context Passing**: Results flow from dependencies to dependents.
+
+---
+
 # 🌐 Run as API Service
 
 Start server:
@@ -298,6 +325,52 @@ Available endpoints:
 
 - `POST /run`
 - `POST /run-multi`
+
+---
+
+# 📊 Observability (Prometheus)
+
+OAO exposes APM metrics at `/metrics`:
+
+- `oao_executions_total`: Execution counter (status, agent_type)
+- `oao_execution_duration_seconds`: Histogram of execution time
+- `oao_active_agents`: Gauge of concurrent agents
+- `oao_token_usage_total`: Token consumption counter
+- `oao_queue_size`: Distributed queue depth
+
+Integrate with Prometheus + Grafana for real-time monitoring.
+
+---
+
+# 🔌 Enterprise Plugin System
+
+Extend OAO without modifying core code.
+
+### 1. Create a Plugin (`my_plugin.py`)
+
+```python
+from oao.policy.registry import PolicyRegistry
+from oao.runtime.scheduler import SchedulerRegistry
+
+def register():
+    # Register custom components
+    PolicyRegistry.register("custom_policy", MyCustomPolicy)
+    SchedulerRegistry.register("priority_scheduler", PriorityScheduler)
+```
+
+### 2. Load the Plugin
+
+```python
+from oao.plugins.loader import PluginLoader
+
+PluginLoader.load("path/to/my_plugin.py")
+```
+
+Supports custom:
+- Policies (Governance)
+- Schedulers (Execution strategy)
+- Event Listeners (Logging/Tracing)
+- Adapters (Framework support)
 
 ---
 
@@ -364,10 +437,10 @@ oao/
 - [x] Parallel scheduler  
 - [x] FastAPI service  
 - [x] Web dashboard  
-- [ ] Distributed scheduler (Redis)  
-- [ ] DAG-based orchestration  
-- [ ] Metrics exporter  
-- [ ] Enterprise plugin ecosystem  
+- [x] Distributed scheduler (Redis)  
+- [x] DAG-based orchestration  
+- [x] Metrics exporter  
+- [x] Enterprise plugin ecosystem  
 
 ---
 
