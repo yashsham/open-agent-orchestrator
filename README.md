@@ -100,7 +100,10 @@ Built-in `StrictPolicy` enforces:
 - Maximum execution steps  
 - Maximum token usage  
 - Maximum tool calls  
+- Maximum tool calls  
 - Execution timeouts  
+
+Violations trigger `PolicyViolation` events and halt execution.
 
 Agents cannot bypass governance rules.
 
@@ -377,7 +380,7 @@ Exposed at `/metrics`:
 Full distributed tracing for workflows. Configure via `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
 - **Root Spans**: `orchestrator.run`, `dag.execute`
-- **Child Spans**: `agent.step`, `tool.execute`, `dag.schedule_task`
+- **Child Spans**: `oao.step.N`, `tool.execute`, `dag.schedule_task`
 - **Context Propagation**: Trace IDs flow across async tasks and Redis queues.
 
 ---

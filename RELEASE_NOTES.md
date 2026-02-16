@@ -17,9 +17,13 @@ This release focuses on **interoperability** and **observability**. We've added 
     - **Event Bridging**: Maps internal LangChain events to OAO's governance layer.
 - **LangGraph Support**: New `LangGraphAdapter` allows you to orchestrate complex state machines with OAO's policy enforcement and telemetry.
 
+### 🛡️ Governance & Policy
+- **Strict Hard-Stops**: Agents exceeding `max_steps` or `max_tokens` are now immediately terminated with a `PolicyViolation` event.
+- **Granular Control**: Policy checks occur before every step execution to prevent runaway costs.
+
 ### 📊 Advanced Observability
-- **OpenTelemetry Tracing**: Full OTLP support. Trace a request from the API -> Orchestrator -> DAG -> Agent -> Tool Call.
-- **Span Attributes**: Detailed metadata (tokens, latency, tool names) attached to every span.
+- **OpenTelemetry Tracing**: Full OTLP support with dedicated spans for every execution step (`oao.step.N`).
+- **Trace Context**: `trace_id` and `span_id` are now propagated in all `ExecutionEvent` payloads for distributed tracing.
 
 ### 🛡️ Crash Recovery & Replay
 - **Deterministic Replay**: The `Orchestrator` can now "fork" and "replay" past executions from any step.
