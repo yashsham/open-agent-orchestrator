@@ -11,7 +11,19 @@ class MockAgent:
         self.error_at = error_at
         self.current = 0
 
-    async def ainvoke(self, task, context=None, policy=None):
+    def invoke(self, task, config=None, **kwargs):
+        # Fallback for sync
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # This is tricky in a demo, but Orchestrator usually runs this in a thread or we use ainvoke
+                return {"output": "sync-fallback"}
+            return asyncio.run(self.ainvoke(task, config=config, **kwargs))
+        except Exception:
+            return {"output": "sync-error"}
+
+    async def ainvoke(self, task, config=None, **kwargs):
         self.current += 1
         await asyncio.sleep(0.5) # Simulate work
         
