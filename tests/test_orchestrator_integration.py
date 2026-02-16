@@ -15,32 +15,36 @@ class MockAdapter:
 
     def plan(self, task):
         return {"steps": ["step1", "step2"]}
+    
+    async def aplan(self, task):
+        return {"steps": ["step1", "step2"]}
 
-    def execute(self, plan, context, policy=None):
-        return {"output": "result"}
+    def execute(self, task, context, policy=None):
+        return {"output": "result", "token_usage": 50}
 
-    async def execute_async(self, plan, context, policy=None):
-        return {"output": "result"}
+    async def execute_async(self, task, context, policy=None):
+        return {"output": "result", "token_usage": 50}
 
     def get_token_usage(self):
         return self.token_usage
 
 class MockAgent:
-    pass
+    def __init__(self):
+        self.name = "MockAgent"
 
 class TestEventSourcedOrchestrator(unittest.TestCase):
     def setUp(self):
+        from oao.runtime.persistence import InMemoryPersistenceAdapter
         self.event_store = InMemoryEventStore()
-        # Mock persistence to avoid Redis dependency in unit tests
-        self.mock_persistence = MagicMock()
+        self.persistence = InMemoryPersistenceAdapter()
         self.orchestrator = Orchestrator(
             policy=StrictPolicy(max_steps=5),
             event_store=self.event_store,
-            persistence=self.mock_persistence
+            persistence=self.persistence
         )
         
         # Patch AdapterRegistry to return MockAdapter
-        self.patcher = patch('oao.adapters.registry.AdapterRegistry.get_adapter', return_value=MockAdapter)
+        self.patcher = patch('oao.adapters.registry.AdapterRegistry.get_adapter', return_value=lambda x: MockAdapter(x))
         self.patcher.start()
 
     def tearDown(self):
@@ -120,7 +124,7 @@ class TestEventSourcedOrchestrator(unittest.TestCase):
         replay_orchestrator = Orchestrator(
             policy=StrictPolicy(max_steps=5),
             event_store=self.event_store, # Share same event store
-            persistence=self.mock_persistence
+            persistence=self.persistence
         )
         
         # Resume from plan step

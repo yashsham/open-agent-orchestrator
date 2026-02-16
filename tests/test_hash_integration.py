@@ -32,38 +32,39 @@ class TestHashIntegration(unittest.TestCase):
         pass
 
     def test_run_generates_hash(self):
-        # We need to mock RedisPersistenceAdapter
-        with unittest.mock.patch('oao.runtime.persistence.RedisPersistenceAdapter') as MockPersistence:
-            mock_inst = MockPersistence.return_value
-            mock_inst.save_execution_step = MagicMock()
-            
-            # Setup Orchestrator
-            orch = Orchestrator(policy=StrictPolicy(max_steps=2))
-            agent = MockAgent()
-            
-            # Run
-            report = orch.run(agent, "test task")
-            
-            # Verify hash
-            self.assertIsNotNone(report.execution_hash)
-            print(f"Sync Execution Hash: {report.execution_hash}")
-            self.assertTrue(len(report.execution_hash) == 64) # SHA256 length
+        from oao.runtime.persistence import InMemoryPersistenceAdapter
+        from oao.runtime.event_store import InMemoryEventStore
+        
+        # Setup Orchestrator with InMemory adapters
+        persistence = InMemoryPersistenceAdapter()
+        event_store = InMemoryEventStore()
+        orch = Orchestrator(persistence=persistence, event_store=event_store, policy=StrictPolicy(max_steps=2))
+        agent = MockAgent()
+        
+        # Run
+        report = orch.run(agent, "test task")
+        
+        # Verify hash
+        self.assertIsNotNone(report.execution_hash)
+        print(f"Sync Execution Hash: {report.execution_hash}")
+        self.assertTrue(len(report.execution_hash) == 64) # SHA256 length
 
     def test_async_run_generates_hash(self):
         # Async test wrapper
         async def run_test():
-             with unittest.mock.patch('oao.runtime.persistence.RedisPersistenceAdapter') as MockPersistence:
-                mock_inst = MockPersistence.return_value
-                mock_inst.save_execution_step = MagicMock()
-                
-                orch = Orchestrator(policy=StrictPolicy(max_steps=2))
-                agent = MockAgent()
-                
-                report = await orch.run_async(agent, "test task async")
-                
-                self.assertIsNotNone(report.execution_hash)
-                print(f"Async Execution Hash: {report.execution_hash}")
-                self.assertTrue(len(report.execution_hash) == 64)
+            from oao.runtime.persistence import InMemoryPersistenceAdapter
+            from oao.runtime.event_store import InMemoryEventStore
+            
+            persistence = InMemoryPersistenceAdapter()
+            event_store = InMemoryEventStore()
+            orch = Orchestrator(persistence=persistence, event_store=event_store, policy=StrictPolicy(max_steps=2))
+            agent = MockAgent()
+            
+            report = await orch.run_async(agent, "test task async")
+            
+            self.assertIsNotNone(report.execution_hash)
+            print(f"Async Execution Hash: {report.execution_hash}")
+            self.assertTrue(len(report.execution_hash) == 64)
 
         asyncio.run(run_test())
 

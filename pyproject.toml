@@ -1,6 +1,6 @@
 [project]
 name = "open-agent-orchestrator"
-version = "1.2.0"
+version = "1.1.0"
 description = "Control plane for AI agents"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -50,3 +50,7 @@ all = [
     "fastapi>=0.100",
     "uvicorn>=0.22",
 ]
+
+[tool.setuptools.packages.find]
+include = ["oao*"]
+exclude = ["blog*", "demos*", "dashboard*", "tests*"]
