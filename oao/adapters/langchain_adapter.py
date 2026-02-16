@@ -158,9 +158,23 @@ class LangChainAdapter(BaseAdapter):
         """
 
         try:
-            if isinstance(result, dict) and "usage" in result:
-                usage = result.get("usage", {})
-                self._token_usage = usage.get("total_tokens", 0)
+            if isinstance(result, dict):
+                # Check standard dictionary result
+                if "usage" in result:
+                    usage = result.get("usage", {})
+                    self._token_usage = usage.get("total_tokens", 0)
+                # Check AIMessage-like logic (if result is object, handled below, but if dict representation)
+                elif "response_metadata" in result:
+                     meta = result.get("response_metadata", {})
+                     token_usage = meta.get("token_usage", {})
+                     self._token_usage = token_usage.get("total_tokens", 0) if isinstance(token_usage, dict) else token_usage.get("total_tokens", 0)
+
+            # Handle AIMessage or other objects
+            elif hasattr(result, "response_metadata"):
+                meta = getattr(result, "response_metadata", {})
+                token_usage = meta.get("token_usage", {})
+                self._token_usage = token_usage.get("total_tokens", 0) if isinstance(token_usage, dict) else 0 # Handle non-dict
+            
             else:
                 self._token_usage = 0
         except Exception:

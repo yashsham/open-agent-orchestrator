@@ -11,5 +11,5 @@ def console_logger(event):
     elif event.event_type == EventType.POLICY_VIOLATION:
         print(f"[EVENT] Policy violation: {event.payload['error']}")
 
-    elif event.event_type == EventType.EXECUTION_COMPLETE:
+    elif event.event_type == EventType.EXECUTION_COMPLETED:
         print("[EVENT] Execution completed")

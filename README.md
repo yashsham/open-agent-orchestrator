@@ -2,7 +2,7 @@
 
 > The Control Plane for AI Agents.
 
-OpenAgentOrchestrator (OAO) is an infrastructure-grade orchestration engine designed to bring **governance**, **determinism**, and **observability** to AI agents.
+OpenAgentOrchestrator (OAO) is a **Deterministic AI Execution Runtime (DAER)** designed to bring infrastructure-grade **governance**, **resilience**, and **observability** to AI agents.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
@@ -38,10 +38,11 @@ We are building a library of technical content to help you engineer reliable age
 - **Safe Claiming**: Uses `RPOPLPUSH` to ensure zero job loss during assignment.
 - **Retries**: Configurable exponential backoff for transient failures.
 
-## 💾 Durable DAG Execution
-- **State Persistence**: Persists every task's result to Redis.
-- **Resume-on-Failure**: Crashed workflows can be resumed; completed tasks are skipped.
-- **Auditable History**: Full execution trace stored in persistent storage.
+## 💾 Durable Event Sourcing
+- **State Reconstruction**: Derives runtime state from immutable event logs for exactly-once correctness.
+- **Side-Effect Idempotency**: Automated SHA-256 tool-call hashing prevents duplicate external actions during retries.
+- **Resume-on-Failure**: Crashed workflows resume at the first incomplete step; completed work is skipped.
+- **Auditable History**: Full execution trace stored in persistent storage (Redis or In-Memory).
 - **Time-Travel Debugging**: Fork and replay past executions to reproduce bugs.
 
 ---
@@ -441,16 +442,16 @@ Client / CLI / Dashboard
    Adapter → External Framework
 ```
 
-Core Components:
-
 - Lifecycle State Machine  
-- Policy Engine  
-- Adapter Registry  
-- Tool Interception Layer  
-- Event Bus  
+- Policy Engine (Stop-Loss Governance)
+- Adapter Registry (LangChain, LangGraph)
+- **Hash-Based Tool Interception Layer**
+- **Append-Only Event Bus**
 - Execution Report Generator  
 - Parallel Scheduler  
 - Multi-Agent Coordinator  
+
+See the [Detailed Architecture Guide](docs/architecture.md) for Mermaid diagrams and recovery flows.
 
 ---
 
@@ -496,9 +497,11 @@ oao/
 - [x] DAG-based orchestration  
 - [x] Metrics exporter  
 - [x] Enterprise plugin ecosystem  
-- [x] Crash Recovery  
+- [x] Crash Recovery & Replay
+- [x] Tool Idempotency Wrapper
+- [x] Event-Sourced Determinism (DAER)
 - [x] OpenTelemetry Tracing  
-- [x] LangGraph Support  
+- [x] LangGraph Support
 
 ---
 

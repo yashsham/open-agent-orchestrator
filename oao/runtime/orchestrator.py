@@ -1,9 +1,7 @@
 import time
-import asyncio
-from typing import Any, Optional
-import time
 import uuid
 import asyncio
+from typing import Any, Optional, Callable, Dict, List
 from opentelemetry import trace
 from oao.telemetry import get_tracer
 
@@ -16,12 +14,15 @@ from oao.policy.strict_policy import PolicyViolation
 from oao.protocol.report import ExecutionReport
 from oao.adapters.registry import AdapterRegistry
 from oao.runtime.event_bus import EventBus
-from oao.runtime.events import Event, EventType
+from oao.runtime.events import Event, EventType, ExecutionEvent
 from oao.runtime.default_logger import console_logger
 import oao.adapters.langchain_adapter # Ensure registration
 import oao.metrics as metrics
 from oao.runtime.hashing import compute_execution_hash
-from oao.runtime.resilience import execute_with_retry, execute_with_retry_async
+from oao.runtime.resilience import execute_with_retry, execute_with_retry_async, RetryConfig, BackoffStrategy
+from oao.runtime.execution import Execution, ExecutionStatus
+from oao.runtime.event_store import InMemoryEventStore, RedisEventStore
+from oao.runtime.persistence import RedisPersistenceAdapter
 
 
 class Orchestrator:
@@ -30,23 +31,73 @@ class Orchestrator:
     Supports both sync and async execution.
     """
 
-    def __init__(self, policy: Optional[Any] = None):
-        self.state_machine = StateMachine()
+    def __init__(self, persistence=None, event_store=None, policy=None):
+        self.persistence = persistence or RedisPersistenceAdapter()
+        self.event_store = event_store or RedisEventStore()
         self.policy = policy
-        self.context = {}
+        self.state_machine = StateMachine()
         self.event_bus = EventBus()
+        self.context = {}
+        self.current_execution_id = None
+        self._simulation_hooks = {}
 
         # Register default event hooks
         self.event_bus.register(EventType.STATE_ENTER, console_logger)
         self.event_bus.register(EventType.POLICY_VIOLATION, console_logger)
-        self.event_bus.register(EventType.EXECUTION_COMPLETE, console_logger)
+        self.event_bus.register(EventType.EXECUTION_COMPLETED, console_logger)
 
-        # Register global listeners
         # Register global listeners
         from oao.runtime.events import GlobalEventRegistry
         for event_type in EventType:
             for listener in GlobalEventRegistry.get_listeners(event_type):
                 self.event_bus.register(event_type, listener)
+
+    # =====================================================
+    # SIMULATION HOOKS
+    # =====================================================
+    def add_simulation_hook(self, name: str, callback: Callable):
+        """Add a hook for testing and simulation."""
+        self._simulation_hooks[name] = callback
+
+    async def _execute_simulation_hook_async(self, name: str, *args, **kwargs):
+        """Execute a simulation hook asynchronously."""
+        if name in self._simulation_hooks:
+            hook = self._simulation_hooks[name]
+            if asyncio.iscoroutinefunction(hook):
+                await hook(*args, **kwargs)
+            else:
+                hook(*args, **kwargs)
+
+    def _execute_simulation_hook_sync(self, name: str, *args, **kwargs):
+        """Execute a simulation hook synchronously. Skips async hooks."""
+        if name in self._simulation_hooks:
+            hook = self._simulation_hooks[name]
+            if not asyncio.iscoroutinefunction(hook):
+                hook(*args, **kwargs)
+            else:
+                print(f"[WARN] Skipping async simulation hook '{name}' in sync execution mode.")
+
+    # =====================================================
+    # TRACING HELPER
+    # =====================================================
+    def _create_execution_event(self, execution_id, event_type, step_number, **kwargs):
+        """Helper to create ExecutionEvent with current trace context."""
+        span = trace.get_current_span()
+        span_ctx = span.get_span_context()
+        trace_id = None
+        span_id = None
+        if span_ctx.is_valid:
+             trace_id = format(span_ctx.trace_id, "032x")
+             span_id = format(span_ctx.span_id, "016x")
+        
+        return ExecutionEvent(
+             execution_id=execution_id,
+             step_number=step_number,
+             event_type=event_type,
+             trace_id=trace_id,
+             span_id=span_id,
+             **kwargs
+        )
 
     # =====================================================
     # SYNC EXECUTION
@@ -63,12 +114,12 @@ class Orchestrator:
 
         metrics.active_agents.inc()
         
+        # Create canonical Execution object
+        execution = Execution.create(task, self.policy, agent, execution_id)
+        execution_id = execution.execution_id # Ensure we use the generated one if passed None
+        
         tracer = get_tracer(__name__)
         
-        # Initialize execution ID if not provided (normal run)
-        if not execution_id:
-            execution_id = str(uuid.uuid4())
-            
         with tracer.start_as_current_span(
             "orchestrator.run_sync",
             attributes={
@@ -81,15 +132,13 @@ class Orchestrator:
             start_time = time.time()
         
             self.current_execution_id = execution_id
-                
-            # Compute deterministic execution hash
-            self.current_execution_hash = compute_execution_hash(task, self.policy, agent)
+            self.current_execution_hash = execution.execution_hash
+            
+            # Register execution as active
+            self.persistence.register_active_execution(execution_id)
 
-            # Initialize persistence
-            # TODO: Inject persistence adapter properly in future refactor
-            from oao.runtime.persistence import RedisPersistenceAdapter
-            persistence = RedisPersistenceAdapter()
-            persistence.register_active_execution(execution_id)
+            # Save Execution Spec/Snapshot
+            self.persistence.save_execution_spec(execution_id, execution.to_dict())
 
             if self.policy:
                 self.policy.start_timer()
@@ -99,67 +148,140 @@ class Orchestrator:
                 # Replay Logic: Hydrate state if resuming
                 if from_step is not None:
                     print(f"[REPLAY] Resuming execution {execution_id} from step {from_step}...")
-                    history = persistence.get_execution_step(execution_id, from_step)
-                    if not history:
-                        raise ValueError(f"No state found for execution {execution_id} step {from_step}")
+                    # Use EventStore for replay
+                    replayed_state = self.event_store.replay_to_state(execution_id, from_step)
                     
+                    if not replayed_state:
+                         # Fallback to legacy persistence if event store replay fails (for backward compatibility during migration)
+                         history = self.persistence.get_execution_step(execution_id, from_step)
+                         if not history:
+                             raise ValueError(f"No state found for execution {execution_id} step {from_step}")
+                         
+                         saved_state = history["state"]
+                         self.context.update(saved_state)
+                    else:
+                        # Hydrate from replayed state
+                        self.context["step_count"] = replayed_state.current_step
+                        self.context["token_usage"] = replayed_state.cumulative_tokens
+                        self.context["tool_calls"] = replayed_state.cumulative_tool_calls
+                        if replayed_state.current_state:
+                             # We need to map string state back to Enum if possible, or trust the state machine
+                             # For now, let's assume we resume at EXECUTE as before, or use the replayed state
+                             pass
+
                     # Ensure agent/adapter are initialized in context
                     self._handle_init(agent, task, framework)
                     
-                    # Restore context by merging saved state
-                    # This preserves agent/adapter while updating data/metrics
-                    saved_state = history["state"]
-                    self.context.update(saved_state)
-                    
-                    # Verify deterministic hash
-                    saved_hash = saved_state.get("execution_hash")
-                    if saved_hash and saved_hash != self.current_execution_hash:
-                        print(f"[WARNING] Replay hash mismatch! Saved: {saved_hash}, Current: {self.current_execution_hash}")
-                        # In future, we might raise PolicyViolation here if strict determinism is required
-
                     # Resume at EXECUTE
                     self.state_machine.set_state(AgentState.EXECUTE)
                 
+                # Emit Execution Started Event
+                start_event = ExecutionEvent(
+                    execution_id=execution_id,
+                    step_number=0,
+                    event_type=EventType.EXECUTION_STARTED,
+                    input_data={
+                        "task": task, 
+                        "agent": agent.__class__.__name__,
+                        "execution_hash": execution.execution_hash
+                    },
+                    cumulative_tokens=0,
+                    cumulative_steps=0,
+                    cumulative_tool_calls=0
+                )
+                self.event_store.append_event(execution_id, start_event)
+                self.event_bus.emit(Event(EventType.EXECUTION_STARTED, start_event.to_dict()))
+
+
                 while not self.state_machine.is_terminal():
+
+                    current_state = self.state_machine.get_state()
+                    step_count = self.context.get("step_count", 0)
+                    token_usage = self.context.get("token_usage", 0)
+                    tool_calls_count = self.context.get("tool_calls", 0)
 
                     if self.policy:
                         self.policy.validate(self.context)
-
-                    current_state = self.state_machine.get_state()
                     
-                    # Persistence: Save state at start of step
-                    persistence.save_execution_step(
-                        execution_id, 
-                        self.context.get("step_count", 0), 
-                        self.context
-                    )
+                    self._execute_simulation_hook_sync("after_policy_validation", execution_id, step_count)
+                    
+                    # Start Step Span
+                    with tracer.start_as_current_span(f"oao.step.{step_count}") as step_span:
+                        step_span.set_attribute("step.number", step_count)
+                        step_span.set_attribute("execution.id", execution_id)
+                        step_span.set_attribute("agent.state", current_state.name)
 
-                    self.event_bus.emit(
-                        Event(EventType.STATE_ENTER, {"state": current_state.name})
-                    )
+                        # Create atomic Execution Event with trace context
+                        event = self._create_execution_event(
+                            execution_id=execution_id,
+                            step_number=step_count,
+                            event_type=EventType.STATE_ENTER,
+                            state=current_state.name,
+                            timestamp=time.time(),
+                            cumulative_tokens=token_usage,
+                            cumulative_steps=step_count,
+                            cumulative_tool_calls=tool_calls_count
+                        )
+                    
+                        # Persist Event (Event-Sourcing)
+                        self.event_store.append_event(execution_id, event)
 
-                    if current_state == AgentState.INIT:
-                        self._handle_init(agent, task, framework)
-                        self.state_machine.transition(AgentState.PLAN)
+                        # Snapshot for quick resume (Hybrid Approach)
+                        self.persistence.save_execution_step(
+                            execution_id, 
+                            step_count, 
+                            self.context
+                        )
 
-                    elif current_state == AgentState.PLAN:
-                        self._handle_plan()
-                        self.state_machine.transition(AgentState.EXECUTE)
+                        self._execute_simulation_hook_sync("after_event_persistence", execution_id, step_count)
 
-                    elif current_state == AgentState.EXECUTE:
-                        self._handle_execute()
-                        self.state_machine.transition(AgentState.REVIEW)
+                        self.event_bus.emit(
+                            Event(EventType.STATE_ENTER, {"state": current_state.name, "execution_id": execution_id})
+                        )
 
-                    elif current_state == AgentState.REVIEW:
-                        self._handle_review()
-                        self.state_machine.transition(AgentState.TERMINATE)
+                        if current_state == AgentState.INIT:
+                            self._handle_init(agent, task, framework)
+                            self.state_machine.transition(AgentState.PLAN)
 
-                    else:
-                        break
+                        elif current_state == AgentState.PLAN:
+                            self._handle_plan()
+                            self.state_machine.transition(AgentState.EXECUTE)
 
+                        elif current_state == AgentState.EXECUTE:
+                            self._handle_execute()
+                            self.state_machine.transition(AgentState.REVIEW)
+
+                        elif current_state == AgentState.REVIEW:
+                            self._handle_review()
+                            self.state_machine.transition(AgentState.TERMINATE)
+
+                        else:
+                            break
+                
                 status = "SUCCESS"
+                
+                # Emit Workflow Completed Event
+                complete_event = ExecutionEvent(
+                    execution_id=execution_id,
+                    step_number=self.context.get("step_count", 0),
+                    event_type=EventType.EXECUTION_COMPLETED,
+                    output_data={"status": status},
+                    cumulative_tokens=self.context.get("token_usage", 0),
+                    cumulative_steps=self.context.get("step_count", 0),
+                    cumulative_tool_calls=self.context.get("tool_calls", 0)
+                )
+                self.event_store.append_event(execution_id, complete_event)
 
             except PolicyViolation as e:
+                error_event = ExecutionEvent(
+                    execution_id=execution_id,
+                    step_number=self.context.get("step_count", 0),
+                    event_type=EventType.POLICY_VIOLATION,
+                    error=str(e),
+                    cumulative_tokens=self.context.get("token_usage", 0)
+                )
+                self.event_store.append_event(execution_id, error_event)
+                
                 self.event_bus.emit(
                     Event(EventType.POLICY_VIOLATION, {"error": str(e)})
                 )
@@ -171,6 +293,16 @@ class Orchestrator:
 
             except (InvalidStateTransition, Exception) as e:
                 print(f"[ERROR] {e}")
+                
+                error_event = ExecutionEvent(
+                    execution_id=execution_id,
+                    step_number=self.context.get("step_count", 0),
+                    event_type=EventType.EXECUTION_FAILED,
+                    error=str(e),
+                    cumulative_tokens=self.context.get("token_usage", 0)
+                )
+                self.event_store.append_event(execution_id, error_event)
+                
                 self.state_machine.fail()
                 metrics.failures_counter.labels(error_type=type(e).__name__).inc()
                 status = "FAILED"
@@ -180,7 +312,7 @@ class Orchestrator:
             finally:
                 metrics.active_agents.dec()
                 try:
-                    persistence.remove_active_execution(execution_id)
+                    self.persistence.remove_active_execution(execution_id)
                 except Exception:
                     pass
 
@@ -199,7 +331,7 @@ class Orchestrator:
         report.execution_id = execution_id
 
         self.event_bus.emit(
-            Event(EventType.EXECUTION_COMPLETE, {"report": report.dict()})
+            Event(EventType.EXECUTION_COMPLETED, {"report": report.dict()})
         )
 
         return report
@@ -219,20 +351,38 @@ class Orchestrator:
 
         tracer = get_tracer(__name__)
         
-        # Initialize execution ID if not provided (normal run)
-        if not execution_id:
-            execution_id = str(uuid.uuid4())
-        
+        # Create canonical Execution object
+        execution = Execution.create(task, self.policy, agent, execution_id)
+        execution_id = execution.execution_id 
+
         self.current_execution_id = execution_id
+        self.current_execution_hash = execution.execution_hash # Use deterministic hash from snapshot
 
-        # Compute deterministic execution hash
-        self.current_execution_hash = compute_execution_hash(task, self.policy, agent)
 
-        # Initialize persistence
-        from oao.runtime.persistence import RedisPersistenceAdapter
-        persistence = RedisPersistenceAdapter()
-        persistence.register_active_execution(execution_id)
+        # Initialize persistence - Use self.persistence instead of creating new
+        # Also register for async
+        self.persistence.register_active_execution(execution_id)
         
+        # Save Execution Spec/Snapshot
+        self.persistence.save_execution_spec(execution_id, execution.to_dict())
+        
+        # Emit Execution Started Event
+        start_event = ExecutionEvent(
+            execution_id=execution_id,
+            step_number=0,
+            event_type=EventType.EXECUTION_STARTED,
+            input_data={
+                "task": task, 
+                "agent": agent.__class__.__name__,
+                "execution_hash": execution.execution_hash
+            },
+            cumulative_tokens=0,
+            cumulative_steps=0,
+            cumulative_tool_calls=0
+        )
+        self.event_store.append_event(execution_id, start_event)
+        self.event_bus.emit(Event(EventType.EXECUTION_STARTED, start_event.to_dict()))
+
         with tracer.start_as_current_span(
             "orchestrator.run",
             attributes={
@@ -253,66 +403,123 @@ class Orchestrator:
                 # Replay Logic: Hydrate state if resuming
                 if from_step is not None:
                     print(f"[REPLAY] Resuming execution {execution_id} from step {from_step}...")
-                    history = persistence.get_execution_step(execution_id, from_step)
-                    if not history:
-                        raise ValueError(f"No state found for execution {execution_id} step {from_step}")
                     
+                    # Use EventStore for replay
+                    replayed_state = self.event_store.replay_to_state(execution_id, from_step)
+                    
+                    if not replayed_state:
+                         # Fallback to legacy persistence if event store replay fails
+                         history = self.persistence.get_execution_step(execution_id, from_step)
+                         if not history:
+                             raise ValueError(f"No state found for execution {execution_id} step {from_step}")
+                         
+                         saved_state = history["state"]
+                         self.context.update(saved_state)
+                    else:
+                        # Hydrate from replayed state
+                        self.context["step_count"] = replayed_state.current_step
+                        self.context["token_usage"] = replayed_state.cumulative_tokens
+                        self.context["tool_calls"] = replayed_state.cumulative_tool_calls
+                        # We trust the state machine or resume at default EXECUTE for now
+                        pass
+
                     # Ensure agent/adapter are initialized in context
                     self._handle_init(agent, task, framework)
                     
-                    # Restore context by merging saved state
-                    saved_state = history["state"]
-                    self.context.update(saved_state)
-                    
-                    # Verify deterministic hash
-                    saved_hash = saved_state.get("execution_hash")
-                    if saved_hash and saved_hash != self.current_execution_hash:
-                        print(f"[WARNING] Replay hash mismatch! Saved: {saved_hash}, Current: {self.current_execution_hash}")
-
                     # Resume at EXECUTE
                     self.state_machine.set_state(AgentState.EXECUTE)
 
                 while not self.state_machine.is_terminal():
 
+                    current_state = self.state_machine.get_state()
+                    step_count = self.context.get("step_count", 0)
+                    token_usage = self.context.get("token_usage", 0)
+                    tool_calls_count = self.context.get("tool_calls", 0)
+
                     if self.policy:
                         self.policy.validate(self.context)
-
-                    current_state = self.state_machine.get_state()
                     
-                    # Persistence: Save state at start of step
-                    persistence.save_execution_step(
-                        execution_id, 
-                        self.context.get("step_count", 0), 
-                        self.context
-                    )
+                    await self._execute_simulation_hook_async("after_policy_validation", execution_id, step_count)
 
-                    self.event_bus.emit(
-                        Event(EventType.STATE_ENTER, {"state": current_state.name})
-                    )
+                    # Start Step Span (Async)
+                    with tracer.start_as_current_span(f"oao.step.{step_count}") as step_span:
+                        step_span.set_attribute("step.number", step_count)
+                        step_span.set_attribute("execution.id", execution_id)
+                        step_span.set_attribute("agent.state", current_state.name)
 
-                    if current_state == AgentState.INIT:
-                        self._handle_init(agent, task, framework)
-                        self.state_machine.transition(AgentState.PLAN)
+                        # Create atomic Execution Event with trace context
+                        event = self._create_execution_event(
+                            execution_id=execution_id,
+                            step_number=step_count,
+                            event_type=EventType.STATE_ENTER,
+                            state=current_state.name,
+                            timestamp=time.time(),
+                            cumulative_tokens=token_usage,
+                            cumulative_steps=step_count,
+                            cumulative_tool_calls=tool_calls_count
+                        )
+                    
+                        # Persist Event (Event-Sourcing)
+                        self.event_store.append_event(execution_id, event)
+                        
+                        # Persistence: Save state at start of step
+                        self.persistence.save_execution_step(
+                            execution_id, 
+                            step_count, 
+                            self.context
+                        )
 
-                    elif current_state == AgentState.PLAN:
-                        self._handle_plan()
-                        self.state_machine.transition(AgentState.EXECUTE)
+                        await self._execute_simulation_hook_async("after_event_persistence", execution_id, step_count)
 
-                    elif current_state == AgentState.EXECUTE:
-                        await self._handle_execute_async()
-                        self.state_machine.transition(AgentState.REVIEW)
+                        self.event_bus.emit(
+                            Event(EventType.STATE_ENTER, {"state": current_state.name, "execution_id": execution_id})
+                        )
 
-                    elif current_state == AgentState.REVIEW:
-                        self._handle_review()
-                        self.state_machine.transition(AgentState.TERMINATE)
+                        if current_state == AgentState.INIT:
+                            self._handle_init(agent, task, framework)
+                            self.state_machine.transition(AgentState.PLAN)
 
-                    else:
-                        break
+                        elif current_state == AgentState.PLAN:
+                            self._handle_plan()
+                            self.state_machine.transition(AgentState.EXECUTE)
+
+                        elif current_state == AgentState.EXECUTE:
+                            await self._handle_execute_async()
+                            self.state_machine.transition(AgentState.REVIEW)
+
+                        elif current_state == AgentState.REVIEW:
+                            self._handle_review()
+                            self.state_machine.transition(AgentState.TERMINATE)
+
+                        else:
+                            break
 
                 status = "SUCCESS"
+                
+                # Emit Workflow Completed Event
+                complete_event = ExecutionEvent(
+                    execution_id=execution_id,
+                    step_number=self.context.get("step_count", 0),
+                    event_type=EventType.EXECUTION_COMPLETED,
+                    output_data={"status": status},
+                    cumulative_tokens=self.context.get("token_usage", 0),
+                    cumulative_steps=self.context.get("step_count", 0),
+                    cumulative_tool_calls=self.context.get("tool_calls", 0)
+                )
+                self.event_store.append_event(execution_id, complete_event)
 
             except Exception as e:
                 print(f"[ASYNC ERROR] {e}")
+                
+                error_event = ExecutionEvent(
+                    execution_id=execution_id,
+                    step_number=self.context.get("step_count", 0),
+                    event_type=EventType.EXECUTION_FAILED,
+                    error=str(e),
+                    cumulative_tokens=self.context.get("token_usage", 0)
+                )
+                self.event_store.append_event(execution_id, error_event)
+                
                 self.state_machine.fail()
                 metrics.failures_counter.labels(error_type=type(e).__name__).inc()
                 status = "FAILED"
@@ -324,7 +531,7 @@ class Orchestrator:
             finally:
                 metrics.active_agents.dec()
                 try:
-                    persistence.remove_active_execution(execution_id)
+                    self.persistence.remove_active_execution(execution_id)
                 except Exception:
                     pass
 
@@ -341,7 +548,7 @@ class Orchestrator:
             report = self._generate_report(status, execution_time)
 
             self.event_bus.emit(
-                Event(EventType.EXECUTION_COMPLETE, {"report": report.dict()})
+                Event(EventType.EXECUTION_COMPLETED, {"report": report.dict()})
             )
 
             return report
@@ -364,8 +571,9 @@ class Orchestrator:
                 raise ImportError(f"Failed to load adapter for framework '{framework}': {e}")
 
             self.context = {
-                "execution_id": getattr(self, "current_execution_id", None), # We'll set this property in run()
+                "execution_id": getattr(self, "current_execution_id", None),
                 "execution_hash": getattr(self, "current_execution_hash", None),
+                "event_store": self.event_store,
                 "agent": agent,
                 "adapter": adapter,
                 "framework": framework,
@@ -396,15 +604,31 @@ class Orchestrator:
             adapter = self.context["adapter"]
             
             # Get retry config from policy
-            retry_config = getattr(self.policy, "retry_config", {})
+            retry_settings = getattr(self.policy, "retry_config", {})
+            retry_config = RetryConfig(
+                max_retries=retry_settings.get("max_retries", 3),
+                initial_delay=retry_settings.get("initial_delay", 1.0),
+                backoff_factor=retry_settings.get("backoff_factor", 2.0),
+                strategy=BackoffStrategy(retry_settings.get("strategy", "EXPONENTIAL"))
+            )
             
+            def on_retry(attempt, exception, delay):
+                event = self._create_execution_event(
+                    execution_id=self.current_execution_id,
+                    step_number=self.context.get("step_count", 0),
+                    event_type=EventType.RETRY_ATTEMPTED,
+                    error=str(exception),
+                    input_data={"attempt": attempt, "delay": delay},
+                    cumulative_tokens=self.context.get("token_usage", 0)
+                )
+                self.event_store.append_event(self.current_execution_id, event)
+                self.event_bus.emit(Event(EventType.RETRY_ATTEMPTED, event.to_dict()))
+
             result = execute_with_retry(
                 adapter.execute,
-                max_retries=retry_config.get("max_retries", 0),
-                initial_delay=retry_config.get("initial_delay", 1.0),
-                backoff_factor=retry_config.get("backoff_factor", 2.0),
-                # retry_on defaults to catch generic Exception, which is broad but safe for v1
-                plan=self.context["plan"],
+                config=retry_config,
+                on_retry=on_retry,
+                task=self.context["plan"],
                 context=self.context,
                 policy=self.policy,
             )
@@ -421,14 +645,31 @@ class Orchestrator:
             adapter = self.context["adapter"]
             
             # Get retry config from policy
-            retry_config = getattr(self.policy, "retry_config", {})
+            retry_settings = getattr(self.policy, "retry_config", {})
+            retry_config = RetryConfig(
+                max_retries=retry_settings.get("max_retries", 3),
+                initial_delay=retry_settings.get("initial_delay", 1.0),
+                backoff_factor=retry_settings.get("backoff_factor", 2.0),
+                strategy=BackoffStrategy(retry_settings.get("strategy", "EXPONENTIAL"))
+            )
+
+            def on_retry(attempt, exception, delay):
+                event = self._create_execution_event(
+                    execution_id=self.current_execution_id,
+                    step_number=self.context.get("step_count", 0),
+                    event_type=EventType.RETRY_ATTEMPTED,
+                    error=str(exception),
+                    input_data={"attempt": attempt, "delay": delay},
+                    cumulative_tokens=self.context.get("token_usage", 0)
+                )
+                self.event_store.append_event(self.current_execution_id, event)
+                self.event_bus.emit(Event(EventType.RETRY_ATTEMPTED, event.to_dict()))
 
             result = await execute_with_retry_async(
                 adapter.execute_async,
-                max_retries=retry_config.get("max_retries", 0),
-                initial_delay=retry_config.get("initial_delay", 1.0),
-                backoff_factor=retry_config.get("backoff_factor", 2.0),
-                plan=self.context["plan"],
+                config=retry_config,
+                on_retry=on_retry,
+                task=self.context["plan"],
                 context=self.context,
                 policy=self.policy,
             )
@@ -471,5 +712,9 @@ class Orchestrator:
             execution_id=self.context.get("execution_id"), # Pass ID from context or argument
             execution_hash=self.context.get("execution_hash"),
         )
+    
+    def get_events(self, execution_id: str):
+        """Helper to get events for an execution."""
+        return self.event_store.get_events(execution_id)
 
 

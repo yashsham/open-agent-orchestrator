@@ -12,7 +12,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 sys.path.insert(0, os.getcwd())
 
 from oao.runtime.orchestrator import Orchestrator
-from oao.runtime.events import EventType
+from oao.runtime.events import EventType, ExecutionEvent
 
 # Mock Agent
 class MockAgent:
@@ -31,8 +31,9 @@ class MockAgent:
     async def invoke_async(self, task):
         return {"output": "telemetry_success", "tokens": 10}
         
-    def invoke(self, task):
-        return {"output": "telemetry_success", "tokens": 10}
+    def invoke(self, input, **kwargs):
+        print(f"[MOCK] Invoked with: {input}")
+        return {"output": "Mock response"}
 
 class TestTelemetry(unittest.TestCase):
     
@@ -47,15 +48,18 @@ class TestTelemetry(unittest.TestCase):
     def test_tracing_enabled(self):
         print("\nTesting OpenTelemetry Tracing...")
         
+        from unittest.mock import MagicMock
+        
         async def run_workflow():
-            orch = Orchestrator()
+            mock_persistence = MagicMock()
+            orch = Orchestrator(persistence=mock_persistence)
             agent = MockAgent()
             
             # This should generate spans
             report = await orch.run_async(agent, "test_telemetry_task")
-            return report
+            return orch, report
 
-        report = asyncio.run(run_workflow())
+        orch, report = asyncio.run(run_workflow())
         
         self.assertEqual(report.status, "SUCCESS")
         
@@ -74,7 +78,26 @@ class TestTelemetry(unittest.TestCase):
         self.assertEqual(root_span.attributes.get("agent.type"), "telemetry_test_agent")
         self.assertEqual(root_span.status.status_code, trace.StatusCode.UNSET) # Success usually leaves it unset unless ERROR
         
-        print("✅ Telemetry verification successful")
+        # Verify Step Spans
+        step_spans = [s for s in spans if s.name.startswith("oao.step.")]
+        print(f"Captured {len(step_spans)} step spans")
+        self.assertTrue(len(step_spans) > 0, "No step spans captured")
+        
+        # Verify events have trace IDs
+        events = orch.get_events(report.execution_id)
+        print(f"Captured {len(events)} events")
+        
+        traced_events = [e for e in events if e.trace_id is not None]
+        print(f"Events with trace_id: {len(traced_events)}")
+        
+        # At least STATE_ENTER events should have trace_id (created inside step loop)
+        self.assertTrue(len(traced_events) > 0, "No events have trace_id")
+        
+        # Verify trace_id matches root span trace_id
+        root_trace_id = format(root_span.context.trace_id, "032x")
+        self.assertEqual(traced_events[0].trace_id, root_trace_id)
+        
+        print("[SUCCESS] Telemetry verification successful")
 
 if __name__ == "__main__":
     unittest.main()

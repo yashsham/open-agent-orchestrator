@@ -139,3 +139,119 @@ class RedisPersistenceAdapter(PersistenceAdapter):
         data = self.redis.get(key)
         return json.loads(data) if data else None
 
+    def append_event(self, execution_id: str, event: Dict[str, Any]):
+        """Append an event to the execution log."""
+        key = f"oao_execution:{execution_id}:events"
+        # Use RPUSH to append to list
+        self.redis.rpush(key, json.dumps(event, default=str))
+        self.redis.expire(key, 604800)
+
+    def get_execution_events(self, execution_id: str) -> list[Dict[str, Any]]:
+        """Get all events for an execution."""
+        key = f"oao_execution:{execution_id}:events"
+        events = self.redis.lrange(key, 0, -1)
+        return [json.loads(e) for e in events]
+        
+    def increment_recovery_count(self, execution_id: str) -> int:
+        """Increment and return the number of recovery attempts."""
+        key = f"oao_execution:{execution_id}:recovery_count"
+        count = self.redis.incr(key)
+        self.redis.expire(key, 604800) # 7 days
+        return count
+        
+    def get_recovery_count(self, execution_id: str) -> int:
+        """Get the current number of recovery attempts."""
+        key = f"oao_execution:{execution_id}:recovery_count"
+        count = self.redis.get(key)
+        return int(count) if count else 0
+
+
+class InMemoryPersistenceAdapter(PersistenceAdapter):
+    """In-memory persistence for testing and benchmarking."""
+    
+    def __init__(self):
+        self.workflows = {}
+        self.nodes = {}
+        self.steps = {}
+        self.specs = {}
+        self.active_executions = set()
+        self.events = {}
+        self.recovery_counts = {}
+
+    def save_workflow_state(self, workflow_id: str, state: Dict[str, Any]):
+        self.workflows[workflow_id] = state
+
+    def save_node_state(self, workflow_id: str, node_name: str, state: Dict[str, Any]):
+        if workflow_id not in self.nodes:
+            self.nodes[workflow_id] = {}
+        self.nodes[workflow_id][node_name] = state
+
+    def load_workflow(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        return self.workflows.get(workflow_id)
+
+    def load_node_state(self, workflow_id: str, node_name: str) -> Optional[Dict[str, Any]]:
+        return self.nodes.get(workflow_id, {}).get(node_name)
+
+    def load_all_nodes(self, workflow_id: str) -> Dict[str, Dict[str, Any]]:
+        return self.nodes.get(workflow_id, {})
+
+    def save_execution_step(self, execution_id: str, step_number: int, state: Dict[str, Any]):
+        if execution_id not in self.steps:
+            self.steps[execution_id] = []
+        
+        safe_state = {
+            k: v for k, v in state.items() 
+            if k not in ["agent", "adapter", "event_store"] 
+            and isinstance(v, (str, int, float, bool, list, dict, type(None)))
+        }
+        
+        snapshot = {
+            "step_number": step_number,
+            "timestamp": datetime.utcnow().isoformat(),
+            "state": safe_state
+        }
+        self.steps[execution_id].append(snapshot)
+        self.steps[execution_id].sort(key=lambda x: x["step_number"])
+
+    def get_execution_history(self, execution_id: str) -> list[Dict[str, Any]]:
+        return self.steps.get(execution_id, [])
+
+    def get_execution_step(self, execution_id: str, step_number: int) -> Optional[Dict[str, Any]]:
+        steps = self.steps.get(execution_id, [])
+        for s in steps:
+            if s["step_number"] == step_number:
+                return s
+        return None
+
+    def register_active_execution(self, execution_id: str):
+        self.active_executions.add(execution_id)
+
+    def remove_active_execution(self, execution_id: str):
+        self.active_executions.discard(execution_id)
+
+    def list_active_executions(self) -> list[str]:
+        return list(self.active_executions)
+
+    def save_execution_spec(self, execution_id: str, spec: Dict[str, Any]):
+        self.specs[execution_id] = spec
+
+    def load_execution_spec(self, execution_id: str) -> Optional[Dict[str, Any]]:
+        return self.specs.get(execution_id)
+
+    def append_event(self, execution_id: str, event: Dict[str, Any]):
+        if execution_id not in self.events:
+            self.events[execution_id] = []
+        self.events[execution_id].append(event)
+
+    def get_execution_events(self, execution_id: str) -> list[Dict[str, Any]]:
+        return self.events.get(execution_id, [])
+
+    def increment_recovery_count(self, execution_id: str) -> int:
+        count = self.recovery_counts.get(execution_id, 0) + 1
+        self.recovery_counts[execution_id] = count
+        return count
+
+    def get_recovery_count(self, execution_id: str) -> int:
+        return self.recovery_counts.get(execution_id, 0)
+
+

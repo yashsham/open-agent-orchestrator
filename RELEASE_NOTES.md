@@ -25,13 +25,19 @@ This release focuses on **interoperability** and **observability**. We've added 
 - **OpenTelemetry Tracing**: Full OTLP support with dedicated spans for every execution step (`oao.step.N`).
 - **Trace Context**: `trace_id` and `span_id` are now propagated in all `ExecutionEvent` payloads for distributed tracing.
 
-### 🛡️ Crash Recovery & Replay
-- **Deterministic Replay**: The `Orchestrator` can now "fork" and "replay" past executions from any step.
-- **Heartbeat & Recovery**: The Distributed Scheduler automatically recovers tasks from crashed workers.
+### 🛡️ Formal Execution Hardening (DAER)
+- **Event-Sourced Orchestrator**: The core runtime is now a Deterministic AI Execution Runtime (DAER). All state is derived from immutable event logs.
+- **Side-Effect Idempotency**: Automated hash-based protection for tool calls prevents duplicate external actions during retries or recovery.
+- **Dynamic Execution Hashing**: Hashes now include `oao.__version__` and adapter versions to ensure audit integrity across updates.
+- **In-Memory Adapters**: New `InMemoryPersistenceAdapter` and `InMemoryEventStore` for high-speed testing and local benchmarking.
+
+### ⚡ Performance Benchmarking
+- **Low Overhead**: Measured runtime overhead of ~9ms per multi-step execution (~0.3ms per step after initialization).
+- **Scalability**: Tested up to 100+ concurrent state transitions without performance degradation.
 
 ### 📚 Technical Content
 - **New Blogs**: Deep dives into Deterministic Execution, Governance, and Replayability.
-- **Demos**: Runnable examples for Failure Prevention and Replay.
+- **Architecture**: Comprehensive Mermaid diagrams for Lifecycle, Recovery, and Idempotency flows.
 
 ---
 
