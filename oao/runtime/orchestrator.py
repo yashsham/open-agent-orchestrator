@@ -14,8 +14,9 @@ from oao.policy.strict_policy import PolicyViolation
 from oao.protocol.report import ExecutionReport
 from oao.adapters.registry import AdapterRegistry
 from oao.runtime.event_bus import EventBus
-from oao.runtime.events import Event, EventType, ExecutionEvent
+from oao.runtime.event_bus import EventBus, Event
 from oao.runtime.default_logger import console_logger
+from oao.runtime.events import EventType, ExecutionEvent
 import oao.adapters.langchain_adapter # Ensure registration
 import oao.metrics as metrics
 from oao.runtime.hashing import compute_execution_hash
@@ -23,7 +24,25 @@ from oao.runtime.resilience import execute_with_retry, execute_with_retry_async,
 from oao.runtime.execution import Execution, ExecutionStatus
 from oao.runtime.event_store import InMemoryEventStore, RedisEventStore
 from oao.runtime.persistence import RedisPersistenceAdapter
+from oao.adapters.base_adapter import BaseAdapter
+from oao.adapters.langchain_adapter import LangChainAdapter
 
+# Mock Adapter for testing
+class MockAdapter(BaseAdapter):
+    def __init__(self, agent):
+        self.agent = agent
+        self._token_usage = 0
+    async def execute_async(self, task, context=None, policy=None):
+        res = await self.agent.ainvoke(task, context=context, policy=policy)
+        self._token_usage = res.get("token_usage", 0)
+        return res
+    def execute(self, task, context=None, policy=None):
+        res = self.agent.invoke(task, context=context, policy=policy)
+        self._token_usage = res.get("token_usage", 0)
+        return res
+    def get_token_usage(self): return self._token_usage
+
+AdapterRegistry.register("mock", MockAdapter)
 
 class Orchestrator:
     """

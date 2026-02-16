@@ -1,3 +1,24 @@
+# 🚀 OpenAgentOrchestrator v1.2.0
+
+**Observability & Real-time Telemetry Update** - Introducing a high-performance dashboard and WebSocket event bridge for the DAER.
+
+---
+
+## 🌟 Key Features
+
+### 🖥️ Observability Dashboard
+- **WebSocket Bridge**: Real-time streaming of `EventBus` signals directly to the UI.
+- **Trace Timeline**: Visual Gantt-chart representation of orchestration steps and tool-call spans.
+- **Governance Widgets**: Real-time dashboards for token budgets and policy status.
+- **React Dashboard**: A dedicated Vite + React frontend for infrastructure-grade monitoring.
+
+### 🛡️ Runtime Formalization (DAER Hardening)
+- **Direct Event Hooks**: Enhanced simulation and monitoring hooks for deep-dive testing.
+- **Benchmark Hardening**: Verified sub-millisecond step overhead for complex agentic workflows.
+- **Import Cleanup**: Standardized default logging and event dispatching.
+
+---
+
 # 🚀 OpenAgentOrchestrator v1.1.0
 
 [![PyPI version](https://badge.fury.io/py/open-agent-orchestrator.svg)](https://pypi.org/project/open-agent-orchestrator/)

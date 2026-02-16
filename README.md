@@ -151,6 +151,17 @@ Run multiple agents under centralized governance:
 
 ---
 
+## 🖥️ Observability Dashboard
+
+Real-time visibility into the Deterministic AI Execution Runtime (DAER):
+
+- **Live Event Bridge**: Stream execution events via WebSockets (`/ws/events`).
+- **Trace Timeline**: Gantt-chart visualization of tool calls and step durations.
+- **Governance Watch**: Real-time tracking of token consumption and budget violations.
+- **Scenario Simulation**: Internal hooks for testing and fine-tuning agent behavior.
+
+---
+
 ## ⚡ Parallel Agent Scheduler
 
 Built-in concurrency management:
