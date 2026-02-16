@@ -15,6 +15,21 @@ OAO acts as a **control plane** on top of existing AI frameworks, enabling safe,
 
 ---
 
+# 📚 Technical Resources via OAO
+
+We are building a library of technical content to help you engineer reliable agents.
+
+### 📝 Technical Blogs
+- [**Deterministic AI Execution**](blog/deterministic-ai-execution.md): Why current agents fail in production and how to fix them.
+- [**Why Agent Systems Need Governance**](blog/agent-governance.md): Implementing budgets, RBAC, and oversight.
+- [**Replayable LLM Pipelines**](blog/replayable-pipelines.md): Time-travel debugging for AI workflows.
+
+### 🎮 Demos
+- [**Failure Prevention**](demos/failure_prevention.py): See `StrictPolicy` stopping runaway agents.
+- [**Deterministic Replay**](demos/deterministic_replay.py): Resume crashed executions with zero state loss.
+
+---
+
 # 🛡️ Fault Tolerance & Persistence
 
 ## 💓 Robust Distributed Scheduler
@@ -27,6 +42,7 @@ OAO acts as a **control plane** on top of existing AI frameworks, enabling safe,
 - **State Persistence**: Persists every task's result to Redis.
 - **Resume-on-Failure**: Crashed workflows can be resumed; completed tasks are skipped.
 - **Auditable History**: Full execution trace stored in persistent storage.
+- **Time-Travel Debugging**: Fork and replay past executions to reproduce bugs.
 
 ---
 
@@ -96,7 +112,8 @@ Pluggable adapter system allows integration with external frameworks.
 
 Currently supported:
 
-- LangChain Adapter
+- **LangChain Adapter**: With deep callback integration and Redis memory.
+- **LangGraph Adapter**: Execute stateful graphs with managed telemetry.
 
 Future roadmap:
 
@@ -202,7 +219,7 @@ For running the API server or using LangChain adapters:
 
 ```bash
 # Install with API server and LangChain support
-pip install "open-agent-orchestrator[server,langchain]"
+pip install "open-agent-orchestrator[server,langchain,langgraph]"
 ```
 
 Or install locally:
@@ -357,7 +374,8 @@ Exposed at `/metrics`:
 - `oao_queue_size`: Distributed queue depth
 
 ### OpenTelemetry Tracing
-Full distributed tracing for workflows:
+Full distributed tracing for workflows. Configure via `OTEL_EXPORTER_OTLP_ENDPOINT`.
+
 - **Root Spans**: `orchestrator.run`, `dag.execute`
 - **Child Spans**: `agent.step`, `tool.execute`, `dag.schedule_task`
 - **Context Propagation**: Trace IDs flow across async tasks and Redis queues.
@@ -475,6 +493,9 @@ oao/
 - [x] DAG-based orchestration  
 - [x] Metrics exporter  
 - [x] Enterprise plugin ecosystem  
+- [x] Crash Recovery  
+- [x] OpenTelemetry Tracing  
+- [x] LangGraph Support  
 
 ---
 
@@ -507,11 +528,11 @@ As AI agents become more autonomous, governance becomes essential.
 
 OAO ensures agents remain:
 
-- Observable  
-- Measurable  
-- Controllable  
-- Scalable  
-- Safe  
+- **Observable**  
+- **Measurable**  
+- **Controllable**  
+- **Scalable**  
+- **Safe**  
 
 ---
 

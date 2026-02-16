@@ -20,6 +20,8 @@ from oao.runtime.events import Event, EventType
 from oao.runtime.default_logger import console_logger
 import oao.adapters.langchain_adapter # Ensure registration
 import oao.metrics as metrics
+from oao.runtime.hashing import compute_execution_hash
+from oao.runtime.resilience import execute_with_retry, execute_with_retry_async
 
 
 class Orchestrator:
@@ -50,67 +52,137 @@ class Orchestrator:
     # SYNC EXECUTION
     # =====================================================
 
-    def run(self, agent: Any, task: str, framework: str = "langchain") -> ExecutionReport:
+    def run(
+        self, 
+        agent: Any, 
+        task: str, 
+        framework: str = "langchain",
+        execution_id: Optional[str] = None,
+        from_step: Optional[int] = None
+    ) -> ExecutionReport:
 
         metrics.active_agents.inc()
-        start_time = time.time()
         
-        # Start histogram timer
-        # We manually time it to include setup time
+        tracer = get_tracer(__name__)
         
-        if self.policy:
-            self.policy.start_timer()
+        # Initialize execution ID if not provided (normal run)
+        if not execution_id:
+            execution_id = str(uuid.uuid4())
+            
+        with tracer.start_as_current_span(
+            "orchestrator.run_sync",
+            attributes={
+                "agent.type": getattr(agent, "name", agent.__class__.__name__),
+                "agent.framework": framework,
+                "task.length": len(task),
+                "execution.id": execution_id
+            }
+        ) as span:
+            start_time = time.time()
+        
+            self.current_execution_id = execution_id
+                
+            # Compute deterministic execution hash
+            self.current_execution_hash = compute_execution_hash(task, self.policy, agent)
 
-        status = "FAILED"
-        try:
-            while not self.state_machine.is_terminal():
+            # Initialize persistence
+            # TODO: Inject persistence adapter properly in future refactor
+            from oao.runtime.persistence import RedisPersistenceAdapter
+            persistence = RedisPersistenceAdapter()
+            persistence.register_active_execution(execution_id)
 
-                if self.policy:
-                    self.policy.validate(self.context)
+            if self.policy:
+                self.policy.start_timer()
 
-                current_state = self.state_machine.get_state()
-
-                self.event_bus.emit(
-                    Event(EventType.STATE_ENTER, {"state": current_state.name})
-                )
-
-                if current_state == AgentState.INIT:
+            status = "FAILED"
+            try:
+                # Replay Logic: Hydrate state if resuming
+                if from_step is not None:
+                    print(f"[REPLAY] Resuming execution {execution_id} from step {from_step}...")
+                    history = persistence.get_execution_step(execution_id, from_step)
+                    if not history:
+                        raise ValueError(f"No state found for execution {execution_id} step {from_step}")
+                    
+                    # Ensure agent/adapter are initialized in context
                     self._handle_init(agent, task, framework)
-                    self.state_machine.transition(AgentState.PLAN)
+                    
+                    # Restore context by merging saved state
+                    # This preserves agent/adapter while updating data/metrics
+                    saved_state = history["state"]
+                    self.context.update(saved_state)
+                    
+                    # Verify deterministic hash
+                    saved_hash = saved_state.get("execution_hash")
+                    if saved_hash and saved_hash != self.current_execution_hash:
+                        print(f"[WARNING] Replay hash mismatch! Saved: {saved_hash}, Current: {self.current_execution_hash}")
+                        # In future, we might raise PolicyViolation here if strict determinism is required
 
-                elif current_state == AgentState.PLAN:
-                    self._handle_plan()
-                    self.state_machine.transition(AgentState.EXECUTE)
+                    # Resume at EXECUTE
+                    self.state_machine.set_state(AgentState.EXECUTE)
+                
+                while not self.state_machine.is_terminal():
 
-                elif current_state == AgentState.EXECUTE:
-                    self._handle_execute()
-                    self.state_machine.transition(AgentState.REVIEW)
+                    if self.policy:
+                        self.policy.validate(self.context)
 
-                elif current_state == AgentState.REVIEW:
-                    self._handle_review()
-                    self.state_machine.transition(AgentState.TERMINATE)
+                    current_state = self.state_machine.get_state()
+                    
+                    # Persistence: Save state at start of step
+                    persistence.save_execution_step(
+                        execution_id, 
+                        self.context.get("step_count", 0), 
+                        self.context
+                    )
 
-                else:
-                    break
+                    self.event_bus.emit(
+                        Event(EventType.STATE_ENTER, {"state": current_state.name})
+                    )
 
-            status = "SUCCESS"
+                    if current_state == AgentState.INIT:
+                        self._handle_init(agent, task, framework)
+                        self.state_machine.transition(AgentState.PLAN)
 
-        except PolicyViolation as e:
-            self.event_bus.emit(
-                Event(EventType.POLICY_VIOLATION, {"error": str(e)})
-            )
-            self.state_machine.fail()
-            metrics.failures_counter.labels(error_type="PolicyViolation").inc()
-            status = "FAILED"
+                    elif current_state == AgentState.PLAN:
+                        self._handle_plan()
+                        self.state_machine.transition(AgentState.EXECUTE)
 
-        except (InvalidStateTransition, Exception) as e:
-            print(f"[ERROR] {e}")
-            self.state_machine.fail()
-            metrics.failures_counter.labels(error_type=type(e).__name__).inc()
-            status = "FAILED"
-        
-        finally:
-            metrics.active_agents.dec()
+                    elif current_state == AgentState.EXECUTE:
+                        self._handle_execute()
+                        self.state_machine.transition(AgentState.REVIEW)
+
+                    elif current_state == AgentState.REVIEW:
+                        self._handle_review()
+                        self.state_machine.transition(AgentState.TERMINATE)
+
+                    else:
+                        break
+
+                status = "SUCCESS"
+
+            except PolicyViolation as e:
+                self.event_bus.emit(
+                    Event(EventType.POLICY_VIOLATION, {"error": str(e)})
+                )
+                self.state_machine.fail()
+                metrics.failures_counter.labels(error_type="PolicyViolation").inc()
+                status = "FAILED"
+                span.record_exception(e)
+                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+
+            except (InvalidStateTransition, Exception) as e:
+                print(f"[ERROR] {e}")
+                self.state_machine.fail()
+                metrics.failures_counter.labels(error_type=type(e).__name__).inc()
+                status = "FAILED"
+                span.record_exception(e)
+                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+            
+            finally:
+                metrics.active_agents.dec()
+                try:
+                    persistence.remove_active_execution(execution_id)
+                except Exception:
+                    pass
 
         execution_time = time.time() - start_time
         
@@ -123,6 +195,8 @@ class Orchestrator:
         )
 
         report = self._generate_report(status, execution_time)
+        # Ensure report has the correct execution_id
+        report.execution_id = execution_id
 
         self.event_bus.emit(
             Event(EventType.EXECUTION_COMPLETE, {"report": report.dict()})
@@ -139,16 +213,33 @@ class Orchestrator:
         agent: Any,
         task: str,
         framework: str = "langchain",
+        execution_id: Optional[str] = None,
+        from_step: Optional[int] = None
     ) -> ExecutionReport:
 
         tracer = get_tracer(__name__)
+        
+        # Initialize execution ID if not provided (normal run)
+        if not execution_id:
+            execution_id = str(uuid.uuid4())
+        
+        self.current_execution_id = execution_id
+
+        # Compute deterministic execution hash
+        self.current_execution_hash = compute_execution_hash(task, self.policy, agent)
+
+        # Initialize persistence
+        from oao.runtime.persistence import RedisPersistenceAdapter
+        persistence = RedisPersistenceAdapter()
+        persistence.register_active_execution(execution_id)
         
         with tracer.start_as_current_span(
             "orchestrator.run",
             attributes={
                 "agent.type": getattr(agent, "name", agent.__class__.__name__),
                 "agent.framework": framework,
-                "task.length": len(task)
+                "task.length": len(task),
+                "execution.id": execution_id
             }
         ) as span:
             metrics.active_agents.inc()
@@ -159,12 +250,41 @@ class Orchestrator:
 
             status = "FAILED"
             try:
+                # Replay Logic: Hydrate state if resuming
+                if from_step is not None:
+                    print(f"[REPLAY] Resuming execution {execution_id} from step {from_step}...")
+                    history = persistence.get_execution_step(execution_id, from_step)
+                    if not history:
+                        raise ValueError(f"No state found for execution {execution_id} step {from_step}")
+                    
+                    # Ensure agent/adapter are initialized in context
+                    self._handle_init(agent, task, framework)
+                    
+                    # Restore context by merging saved state
+                    saved_state = history["state"]
+                    self.context.update(saved_state)
+                    
+                    # Verify deterministic hash
+                    saved_hash = saved_state.get("execution_hash")
+                    if saved_hash and saved_hash != self.current_execution_hash:
+                        print(f"[WARNING] Replay hash mismatch! Saved: {saved_hash}, Current: {self.current_execution_hash}")
+
+                    # Resume at EXECUTE
+                    self.state_machine.set_state(AgentState.EXECUTE)
+
                 while not self.state_machine.is_terminal():
 
                     if self.policy:
                         self.policy.validate(self.context)
 
                     current_state = self.state_machine.get_state()
+                    
+                    # Persistence: Save state at start of step
+                    persistence.save_execution_step(
+                        execution_id, 
+                        self.context.get("step_count", 0), 
+                        self.context
+                    )
 
                     self.event_bus.emit(
                         Event(EventType.STATE_ENTER, {"state": current_state.name})
@@ -203,6 +323,10 @@ class Orchestrator:
                 
             finally:
                 metrics.active_agents.dec()
+                try:
+                    persistence.remove_active_execution(execution_id)
+                except Exception:
+                    pass
 
             execution_time = time.time() - start_time
             
@@ -227,76 +351,103 @@ class Orchestrator:
     # =====================================================
 
     def _handle_init(self, agent: Any, task: str, framework: str):
-        print("[INIT] Initializing agent...")
+        tracer = get_tracer(__name__)
+        with tracer.start_as_current_span("orchestrator.init"):
+            print("[INIT] Initializing agent...")
+            
+            try:
+                AdapterClass = AdapterRegistry.get_adapter(framework)
+                adapter = AdapterClass(agent)
+            except Exception as e:
+                # If adapter fails to load (e.g., missing dependency),
+                # raise the error to fail the execution gracefully
+                raise ImportError(f"Failed to load adapter for framework '{framework}': {e}")
 
-        try:
-            AdapterClass = AdapterRegistry.get_adapter(framework)
-            adapter = AdapterClass(agent)
-        except Exception as e:
-            # If adapter fails to load (e.g., missing dependency),
-            # raise the error to fail the execution gracefully
-            raise ImportError(f"Failed to load adapter for framework '{framework}': {e}")
-
-        self.context = {
-            "agent": agent,
-            "adapter": adapter,
-            "framework": framework,
-            "task": task,
-            "plan": None,
-            "execution_result": None,
-            "final_output": None,
-            "step_count": 0,
-            "token_usage": 0,
-            "tool_calls": 0,
-        }
+            self.context = {
+                "execution_id": getattr(self, "current_execution_id", None), # We'll set this property in run()
+                "execution_hash": getattr(self, "current_execution_hash", None),
+                "agent": agent,
+                "adapter": adapter,
+                "framework": framework,
+                "task": task,
+                "plan": None,
+                "execution_result": None,
+                "final_output": None,
+                "step_count": 0,
+                "token_usage": 0,
+                "tool_calls": 0,
+            }
 
     def _handle_plan(self):
-        print("[PLAN] Planning task...")
-        self.context["step_count"] += 1
+        tracer = get_tracer(__name__)
+        with tracer.start_as_current_span("orchestrator.plan"):
+            print("[PLAN] Planning task...")
+            self.context["step_count"] += 1
 
-        adapter = self.context["adapter"]
-        self.context["plan"] = adapter.plan(self.context["task"])
+            adapter = self.context["adapter"]
+            self.context["plan"] = adapter.plan(self.context["task"])
 
     def _handle_execute(self):
-        print("[EXECUTE] Executing task...")
-        self.context["step_count"] += 1
+        tracer = get_tracer(__name__)
+        with tracer.start_as_current_span("orchestrator.execute"):
+            print("[EXECUTE] Executing task...")
+            self.context["step_count"] += 1
 
-        adapter = self.context["adapter"]
+            adapter = self.context["adapter"]
+            
+            # Get retry config from policy
+            retry_config = getattr(self.policy, "retry_config", {})
+            
+            result = execute_with_retry(
+                adapter.execute,
+                max_retries=retry_config.get("max_retries", 0),
+                initial_delay=retry_config.get("initial_delay", 1.0),
+                backoff_factor=retry_config.get("backoff_factor", 2.0),
+                # retry_on defaults to catch generic Exception, which is broad but safe for v1
+                plan=self.context["plan"],
+                context=self.context,
+                policy=self.policy,
+            )
 
-        result = adapter.execute(
-            self.context["plan"],
-            context=self.context,
-            policy=self.policy,
-        )
-
-        self.context["execution_result"] = result
-        self.context["token_usage"] += adapter.get_token_usage()
+            self.context["execution_result"] = result
+            self.context["token_usage"] += adapter.get_token_usage()
 
     async def _handle_execute_async(self):
-        print("[EXECUTE-ASYNC] Executing task...")
-        self.context["step_count"] += 1
+        tracer = get_tracer(__name__)
+        with tracer.start_as_current_span("orchestrator.execute"):
+            print("[EXECUTE-ASYNC] Executing task...")
+            self.context["step_count"] += 1
 
-        adapter = self.context["adapter"]
+            adapter = self.context["adapter"]
+            
+            # Get retry config from policy
+            retry_config = getattr(self.policy, "retry_config", {})
 
-        result = await adapter.execute_async(
-            self.context["plan"],
-            context=self.context,
-            policy=self.policy,
-        )
+            result = await execute_with_retry_async(
+                adapter.execute_async,
+                max_retries=retry_config.get("max_retries", 0),
+                initial_delay=retry_config.get("initial_delay", 1.0),
+                backoff_factor=retry_config.get("backoff_factor", 2.0),
+                plan=self.context["plan"],
+                context=self.context,
+                policy=self.policy,
+            )
 
-        self.context["execution_result"] = result
-        self.context["token_usage"] += adapter.get_token_usage()
+            self.context["execution_result"] = result
+            self.context["token_usage"] += adapter.get_token_usage()
 
     def _handle_review(self):
-        print("[REVIEW] Reviewing result...")
-        self.context["step_count"] += 1
+        tracer = get_tracer(__name__)
+        with tracer.start_as_current_span("orchestrator.review"):
+            print("[REVIEW] Reviewing result...")
+            self.context["step_count"] += 1
 
-        result = self.context["execution_result"]
+            result = self.context["execution_result"]
 
-        if isinstance(result, dict) and "output" in result:
-            self.context["final_output"] = result["output"]
-        else:
-            self.context["final_output"] = str(result)
+            if isinstance(result, dict) and "output" in result:
+                self.context["final_output"] = result["output"]
+            else:
+                self.context["final_output"] = str(result)
 
     # =====================================================
     # Report Generator
@@ -317,6 +468,8 @@ class Orchestrator:
             execution_time_seconds=execution_time,
             state_history=[state.name for state in self.state_machine.get_history()],
             final_output=self.context.get("final_output"),
+            execution_id=self.context.get("execution_id"), # Pass ID from context or argument
+            execution_hash=self.context.get("execution_hash"),
         )
 
 

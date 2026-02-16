@@ -9,6 +9,7 @@ except ImportError:
         "    pip install open-agent-orchestrator[server]"
     )
 
+import uuid
 from typing import Dict, Optional
 
 from oao.runtime.orchestrator import Orchestrator
@@ -42,6 +43,24 @@ app.add_middleware(
 )
 
 # -----------------------------------------------------
+# Startup Hooks
+# -----------------------------------------------------
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    On server startup, attempt to recover crashed executions.
+    """
+    try:
+        from oao.runtime.recovery import RecoveryManager
+        import asyncio
+        manager = RecoveryManager()
+        # Launch recovery in background
+        asyncio.create_task(manager.recover_executions())
+    except Exception as e:
+        print(f"[ERROR] Failed to init recovery manager: {e}")
+
+# -----------------------------------------------------
 # Request Schemas
 # -----------------------------------------------------
 
@@ -58,6 +77,11 @@ class MultiAgentRequest(BaseModel):
     framework: str = "langchain"
     max_concurrency: int = 3
     agent_count: int = 2
+
+
+class ReplayRequest(SingleAgentRequest):
+    execution_id: str
+    from_step: int
 
 
 # -----------------------------------------------------
@@ -95,6 +119,17 @@ async def run_single_agent(request: SingleAgentRequest):
     )
 
     orch = Orchestrator(policy=policy)
+    
+    # Pre-generate execution ID to save spec for recovery
+    execution_id = str(uuid.uuid4())
+    
+    # Save execution spec
+    from oao.runtime.persistence import RedisPersistenceAdapter
+    try:
+        persistence = RedisPersistenceAdapter()
+        persistence.save_execution_spec(execution_id, request.dict())
+    except Exception as e:
+        print(f"[WARNING] Failed to save execution spec for recovery: {e}")
 
     agent = AgentFactory.create_agent(request.framework)
 
@@ -102,6 +137,34 @@ async def run_single_agent(request: SingleAgentRequest):
         agent=agent,
         task=request.task,
         framework=request.framework,
+        execution_id=execution_id
+    )
+
+    return report.dict()
+
+
+@app.post("/replay")
+async def replay_execution(request: ReplayRequest):
+    """
+    Replay an execution from a specific step.
+    """
+    policy = StrictPolicy(
+        max_steps=request.max_steps,
+        max_tokens=request.max_tokens,
+    )
+
+    orch = Orchestrator(policy=policy)
+
+    # Re-create agent based on request
+    # Note: State is not rehydrated here, but inside run_async via persistence
+    agent = AgentFactory.create_agent(request.framework)
+
+    report = await orch.run_async(
+        agent=agent,
+        task=request.task,
+        framework=request.framework,
+        execution_id=request.execution_id,
+        from_step=request.from_step
     )
 
     return report.dict()

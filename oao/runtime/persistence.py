@@ -74,3 +74,68 @@ class RedisPersistenceAdapter(PersistenceAdapter):
         data = self.redis.hgetall(key)
         # Convert all JSON string values to dicts
         return {k: json.loads(v) for k, v in data.items()}
+
+    def save_execution_step(self, execution_id: str, step_number: int, state: Dict[str, Any]):
+        """Save a snapshot of execution state at a specific step."""
+        key = f"oao_execution:{execution_id}:steps"
+        
+        # Filter out non-serializable objects (agent, adapter)
+        # We only want to persist data: inputs, outputs, metrics, plan
+        safe_state = {
+            k: v for k, v in state.items() 
+            if k not in ["agent", "adapter"] 
+            and isinstance(v, (str, int, float, bool, list, dict, type(None)))
+        }
+        
+        # Store comprehensive state snapshot
+        snapshot = {
+            "step_number": step_number,
+            "timestamp": datetime.utcnow().isoformat(),
+            "state": safe_state
+        }
+        # Use json.dumps with default=str for any other edge cases
+        self.redis.zadd(key, {json.dumps(snapshot, default=str): step_number})
+        self.redis.expire(key, 604800) # 7 days retention for history
+
+    def get_execution_history(self, execution_id: str) -> list[Dict[str, Any]]:
+        """Get full history of an execution."""
+        key = f"oao_execution:{execution_id}:steps"
+        # Get all steps sorted by score (step number)
+        steps = self.redis.zrange(key, 0, -1)
+        return [json.loads(s) for s in steps]
+
+    def get_execution_step(self, execution_id: str, step_number: int) -> Optional[Dict[str, Any]]:
+        """Get state at a specific step."""
+        key = f"oao_execution:{execution_id}:steps"
+        # Get specific range by score
+        steps = self.redis.zrangebyscore(key, step_number, step_number)
+        return json.loads(steps[0]) if steps else None
+
+    # =====================================================
+    # Crash Recovery Support
+    # =====================================================
+
+    def register_active_execution(self, execution_id: str):
+        """Mark an execution as active (running)."""
+        self.redis.sadd("oao:active_executions", execution_id)
+
+    def remove_active_execution(self, execution_id: str):
+        """Mark an execution as completed and remove from active set."""
+        self.redis.srem("oao:active_executions", execution_id)
+
+    def list_active_executions(self) -> list[str]:
+        """List all currently active execution IDs."""
+        return list(self.redis.smembers("oao:active_executions"))
+
+    def save_execution_spec(self, execution_id: str, spec: Dict[str, Any]):
+        """Save the execution specification (config) for recovery."""
+        key = f"oao_execution:{execution_id}:spec"
+        self.redis.set(key, json.dumps(spec))
+        self.redis.expire(key, 604800) # 7 days
+
+    def load_execution_spec(self, execution_id: str) -> Optional[Dict[str, Any]]:
+        """Load the execution specification."""
+        key = f"oao_execution:{execution_id}:spec"
+        data = self.redis.get(key)
+        return json.loads(data) if data else None
+

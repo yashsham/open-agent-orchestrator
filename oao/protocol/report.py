@@ -15,6 +15,7 @@ class ExecutionReport(BaseModel):
     state_history: List[str]
     final_output: Optional[str]
     timestamp: datetime
+    execution_hash: Optional[str] = None
 
     @staticmethod
     def create(
@@ -26,9 +27,11 @@ class ExecutionReport(BaseModel):
         execution_time_seconds: float,
         state_history: List[str],
         final_output: Optional[str],
+        execution_id: Optional[str] = None,
+        execution_hash: Optional[str] = None,
     ):
         return ExecutionReport(
-            execution_id=str(uuid4()),
+            execution_id=execution_id or str(uuid4()),
             agent_name=agent_name,
             status=status,
             total_tokens=total_tokens,
@@ -38,4 +41,5 @@ class ExecutionReport(BaseModel):
             state_history=state_history,
             final_output=final_output,
             timestamp=datetime.utcnow(),
+            execution_hash=execution_hash,
         )

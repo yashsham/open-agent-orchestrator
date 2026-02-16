@@ -12,10 +12,27 @@ class LangChainAdapter(BaseAdapter):
         pip install open-agent-orchestrator[langchain]
     """
 
-    def __init__(self, agent: Any):
+    def __init__(self, agent: Any, session_id: str = None):
         self._ensure_langchain_installed()
         self.agent = agent
         self._token_usage = 0
+        self.session_id = session_id
+        
+        # Inject memory if agent is a Runnable (modern LangChain)
+        if self.session_id:
+            from oao.adapters.langchain.memory import OAORedisChatMessageHistory
+            from langchain_core.runnables.history import RunnableWithMessageHistory
+            
+            # If agent is already a Runnable binding, we wrap it
+            # Note: This implies the agent expects 'input' and returns 'output' or similar dict
+            self.agent_with_history = RunnableWithMessageHistory(
+                agent,
+                lambda session_id: OAORedisChatMessageHistory(session_id),
+                input_messages_key="input",
+                history_messages_key="history",
+            )
+        else:
+            self.agent_with_history = None
 
     # =====================================================
     # Dependency Guard
@@ -74,7 +91,21 @@ class LangChainAdapter(BaseAdapter):
         if context is not None:
             self._wrap_tools(context, policy)
 
-        result = self.agent.invoke(task)
+        # Create callbacks
+        from oao.adapters.langchain.callbacks import OAOCallbackHandler
+        from oao.runtime.event_bus import EventBus
+        
+        event_bus = EventBus() 
+        callback = OAOCallbackHandler(event_bus)
+
+        config = {"callbacks": [callback]}
+        if self.session_id:
+            config["configurable"] = {"session_id": self.session_id}
+            invoker = self.agent_with_history if self.agent_with_history else self.agent
+        else:
+            invoker = self.agent
+
+        result = invoker.invoke(task, config=config)
 
         self._extract_token_usage(result)
 
@@ -83,7 +114,6 @@ class LangChainAdapter(BaseAdapter):
     async def execute_async(self, task: str, context: dict = None, policy=None) -> Any:
         """
         Asynchronous execution.
-        Runs blocking invoke() inside a thread pool.
         """
 
         import asyncio
@@ -91,12 +121,28 @@ class LangChainAdapter(BaseAdapter):
         if context is not None:
             self._wrap_tools(context, policy)
 
-        loop = asyncio.get_event_loop()
+        from oao.adapters.langchain.callbacks import OAOCallbackHandler
+        from oao.runtime.event_bus import EventBus
+        
+        event_bus = EventBus()
+        callback = OAOCallbackHandler(event_bus)
+        
+        config = {"callbacks": [callback]}
+        if self.session_id:
+            config["configurable"] = {"session_id": self.session_id}
+            invoker = self.agent_with_history if self.agent_with_history else self.agent
+        else:
+            invoker = self.agent
 
-        result = await loop.run_in_executor(
-            None,
-            lambda: self.agent.invoke(task),
-        )
+        # If agent supports ainvoke, use it. Else run_in_executor.
+        if hasattr(invoker, "ainvoke"):
+            result = await invoker.ainvoke(task, config=config)
+        else:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: invoker.invoke(task, config=config),
+            )
 
         self._extract_token_usage(result)
 

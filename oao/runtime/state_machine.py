@@ -47,6 +47,13 @@ class StateMachine:
         self.current_state = next_state
         self.history.append(next_state)
 
+    def set_state(self, state: AgentState):
+        """
+        Force set the current state. used for replay/restoration.
+        """
+        self.current_state = state
+        self.history.append(state)
+
     def fail(self):
         """
         Move to FAILED state immediately.

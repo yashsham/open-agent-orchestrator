@@ -16,11 +16,19 @@ class StrictPolicy:
         max_steps: int = 10,
         max_tool_calls: int = 5,
         timeout_seconds: int = 30,
+        retry_config: dict = None,
     ):
         self.max_tokens = max_tokens
         self.max_steps = max_steps
         self.max_tool_calls = max_tool_calls
         self.timeout_seconds = timeout_seconds
+        
+        # Default retry configuration
+        self.retry_config = retry_config or {
+            "max_retries": 2,
+            "initial_delay": 1.0,
+            "backoff_factor": 2.0
+        }
 
         self.start_time = None
 
