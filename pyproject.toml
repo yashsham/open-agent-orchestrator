@@ -1,6 +1,6 @@
 [project]
 name = "open-agent-orchestrator"
-version = "1.1.1"
+version = "1.1.2"
 description = "Control plane for AI agents"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -46,9 +46,32 @@ langgraph = [
     "langgraph>=0.0.10"
 ]
 
+crewai = [
+    "crewai>=0.28"
+]
+
+autogen = [
+    "pyautogen>=0.2"
+]
+
+agno = [
+    "agno>=1.0"
+]
+
+llamaindex = [
+    "llama-index>=0.10"
+]
+
 all = [
     "fastapi>=0.100",
     "uvicorn>=0.22",
+    "redis>=5.0.0",
+    "langchain>=0.1",
+    "langgraph>=0.0.10",
+    "crewai>=0.28",
+    "pyautogen>=0.2",
+    "agno>=1.0",
+    "llama-index>=0.10",
 ]
 
 [tool.setuptools.packages.find]
