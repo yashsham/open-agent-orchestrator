@@ -32,6 +32,8 @@ class MockAdapter(BaseAdapter):
     def __init__(self, agent):
         self.agent = agent
         self._token_usage = 0
+    def plan(self, task: str):
+        return task
     async def execute_async(self, task, context=None, policy=None):
         res = await self.agent.ainvoke(task, context=context, policy=policy)
         self._token_usage = res.get("token_usage", 0)

@@ -267,7 +267,7 @@ report = orch.run(
     task="Explain AI orchestration",
 )
 
-print(report.json(indent=2))
+print(report.model_dump_json(indent=2))
 ```
 
 ---
@@ -288,7 +288,7 @@ async def main():
         agent=DummyAgent(),
         task="Async execution demo"
     )
-    print(report.json(indent=2))
+    print(report.model_dump_json(indent=2))
 
 asyncio.run(main())
 ```
