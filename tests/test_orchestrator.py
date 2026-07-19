@@ -4,7 +4,7 @@ from oao.policy.strict_policy import StrictPolicy
 
 
 class DummyAgent:
-    def invoke(self, task):
+    def invoke(self, task, **kwargs):
         return {"output": f"Processed: {task}"}
 
 

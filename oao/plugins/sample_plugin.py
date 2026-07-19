@@ -43,7 +43,7 @@ class SamplePlugin(PluginInterface):
         SchedulerRegistry.register("fifo", FifoScheduler)
         
         # Register Event Listener
-        GlobalEventRegistry.register(EventType.EXECUTION_COMPLETE, on_execution_complete)
+        GlobalEventRegistry.register(EventType.EXECUTION_COMPLETED, on_execution_complete)
 
     def deactivate(self):
         print(f"[PLUGIN] Deactivating {self.name}...")

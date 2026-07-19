@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 import json
-import redis
+try:
+    import redis
+except ImportError:
+    redis = None
 import time
 from datetime import datetime
 
@@ -38,7 +41,20 @@ class RedisPersistenceAdapter(PersistenceAdapter):
     """Redis-backed persistence for DAG execution."""
     
     def __init__(self, redis_url: str = "redis://localhost:6379/0"):
-        self.redis = redis.from_url(redis_url, decode_responses=True)
+        if redis is None:
+            raise ImportError(
+                "Redis is not installed.\n"
+                "Install with:\n"
+                "    pip install open-agent-orchestrator[distributed]"
+            )
+        try:
+            self.redis = redis.from_url(redis_url, decode_responses=True)
+        except Exception as e:
+            raise ConnectionError(
+                f"Failed to connect to Redis at {redis_url}.\n"
+                f"Error: {e}\n"
+                f"Please ensure a Redis server is running."
+            )
 
     def save_workflow_state(self, workflow_id: str, state: Dict[str, Any]):
         key = f"oao_workflow:{workflow_id}"

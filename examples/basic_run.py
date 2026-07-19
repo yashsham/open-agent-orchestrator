@@ -16,6 +16,9 @@ class DummyAdapter(BaseAdapter):
     def execute(self, task: str, context: dict = None, policy = None):
         return {"output": f"Executed: {task}"}
 
+    async def execute_async(self, task: str, context: dict = None, policy = None):
+        return {"output": f"Executed: {task}"}
+
     def get_token_usage(self) -> int:
         return 100
 

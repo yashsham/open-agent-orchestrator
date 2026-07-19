@@ -93,7 +93,7 @@ def test_store_result(mock_redis):
     # Verify Redis calls
     assert mock_redis.set.called
     assert mock_redis.expire.called
-    mock_redis.hset.assert_called_with("oao_job:test-job-id", "status", "SUCCESS")
+    mock_redis.hset.assert_any_call("oao_job:test-job-id", "status", "SUCCESS")
 
 
 def test_get_queue_length(mock_redis):

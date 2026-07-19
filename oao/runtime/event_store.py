@@ -166,8 +166,22 @@ class RedisEventStore(EventStore):
     """
     
     def __init__(self, redis_url: str = "redis://localhost:6379/0"):
-        import redis
-        self.redis = redis.from_url(redis_url, decode_responses=True)
+        try:
+            import redis
+        except ImportError:
+            raise ImportError(
+                "Redis is not installed.\n"
+                "Install with:\n"
+                "    pip install open-agent-orchestrator[distributed]"
+            )
+        try:
+            self.redis = redis.from_url(redis_url, decode_responses=True)
+        except Exception as e:
+            raise ConnectionError(
+                f"Failed to connect to Redis at {redis_url}.\n"
+                f"Error: {e}\n"
+                f"Please ensure a Redis server is running."
+            )
     
     def append_event(self, execution_id: str, event: ExecutionEvent) -> None:
         """Append event to Redis sorted set."""

@@ -1,4 +1,7 @@
-import redis
+try:
+    import redis
+except ImportError:
+    redis = None
 import json
 import uuid
 from typing import Dict, Any, Optional
@@ -28,6 +31,12 @@ class DistributedScheduler:
         Args:
             redis_url: Redis connection URL
         """
+        if redis is None:
+            raise ImportError(
+                "Redis is not installed.\n"
+                "Install with:\n"
+                "    pip install open-agent-orchestrator[distributed]"
+            )
         try:
             self.redis = redis.from_url(redis_url, decode_responses=True)
             # Test connection

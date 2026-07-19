@@ -22,8 +22,8 @@ import oao.metrics as metrics
 from oao.runtime.hashing import compute_execution_hash
 from oao.runtime.resilience import execute_with_retry, execute_with_retry_async, RetryConfig, BackoffStrategy
 from oao.runtime.execution import Execution, ExecutionStatus
-from oao.runtime.event_store import InMemoryEventStore, RedisEventStore
-from oao.runtime.persistence import RedisPersistenceAdapter
+from oao.runtime.event_store import InMemoryEventStore
+from oao.runtime.persistence import InMemoryPersistenceAdapter
 from oao.adapters.base_adapter import BaseAdapter
 from oao.adapters.langchain_adapter import LangChainAdapter
 
@@ -51,8 +51,8 @@ class Orchestrator:
     """
 
     def __init__(self, persistence=None, event_store=None, policy=None):
-        self.persistence = persistence or RedisPersistenceAdapter()
-        self.event_store = event_store or RedisEventStore()
+        self.persistence = persistence or InMemoryPersistenceAdapter()
+        self.event_store = event_store or InMemoryEventStore()
         self.policy = policy
         self.state_machine = StateMachine()
         self.event_bus = EventBus()
@@ -581,13 +581,16 @@ class Orchestrator:
         with tracer.start_as_current_span("orchestrator.init"):
             print("[INIT] Initializing agent...")
             
-            try:
-                AdapterClass = AdapterRegistry.get_adapter(framework)
-                adapter = AdapterClass(agent)
-            except Exception as e:
-                # If adapter fails to load (e.g., missing dependency),
-                # raise the error to fail the execution gracefully
-                raise ImportError(f"Failed to load adapter for framework '{framework}': {e}")
+            if isinstance(agent, BaseAdapter):
+                adapter = agent
+            else:
+                try:
+                    AdapterClass = AdapterRegistry.get_adapter(framework)
+                    adapter = AdapterClass(agent)
+                except Exception as e:
+                    # If adapter fails to load (e.g., missing dependency),
+                    # raise the error to fail the execution gracefully
+                    raise ImportError(f"Failed to load adapter for framework '{framework}': {e}")
 
             self.context = {
                 "execution_id": getattr(self, "current_execution_id", None),

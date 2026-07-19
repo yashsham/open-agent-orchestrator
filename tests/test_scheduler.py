@@ -3,7 +3,7 @@ import pytest
 from oao.runtime.scheduler import ParallelAgentScheduler
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_scheduler_runs_tasks():
 
     scheduler = ParallelAgentScheduler(max_concurrency=2)
