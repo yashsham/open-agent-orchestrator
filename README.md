@@ -116,14 +116,15 @@ Pluggable adapter system allows integration with external frameworks.
 
 Currently supported:
 
-- **LangChain Adapter**: With deep callback integration and Redis memory.
+- **LangChain Adapter**: With deep callback integration.
 - **LangGraph Adapter**: Execute stateful graphs with managed telemetry.
+- **CrewAI Adapter**: Kick off Crews or run individual Agents natively.
+- **AutoGen Adapter**: Wrap conversation/initiations between ConversableAgents.
+- **Agno AI Adapter**: Run Agno/Phidata agents with metric tracking.
+- **LlamaIndex Adapter**: Wrap query engines and LlamaIndex agents.
 
 Future roadmap:
 
-- CrewAI  
-- AutoGen  
-- LlamaIndex  
 - Enterprise custom adapters  
 
 Adapters are fully decoupled from orchestration core.
@@ -228,13 +229,16 @@ Install from PyPI:
 pip install open-agent-orchestrator
 ```
 
+> [!NOTE]
+> By default, `Orchestrator` runs locally in memory out-of-the-box with **zero Redis connection or package dependencies required**.
+
 ### Optional Dependencies
 
-For running the API server or using LangChain adapters:
+Install only the adapters you need to keep dependencies lightweight:
 
 ```bash
-# Install with API server and LangChain support
-pip install "open-agent-orchestrator[server,langchain,langgraph]"
+# Install with API server and specific framework support
+pip install "open-agent-orchestrator[server,langchain,langgraph,crewai,autogen,agno,llamaindex]"
 ```
 
 Or install locally:
@@ -513,6 +517,10 @@ oao/
 - [x] Event-Sourced Determinism (DAER)
 - [x] OpenTelemetry Tracing  
 - [x] LangGraph Support
+- [x] CrewAI Support
+- [x] AutoGen Support
+- [x] Agno AI (Phidata) Support
+- [x] LlamaIndex Support
 
 ---
 
